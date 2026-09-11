@@ -5,9 +5,9 @@ per cue — into a timed `.srt`.
 
 There are two ways to run it, and they are the same program:
 
-- **In a browser**, at the published page. Nothing to install, and nothing is
-  uploaded: the page runs this repository's own `ocr_subs.py` on your machine,
-  inside the tab.
+- **In a browser**, at <https://diaconuccalin.github.io/ocr-subs/>. Nothing to
+  install, and nothing is uploaded: the page runs this repository's own
+  `ocr_subs.py` on your machine, inside the tab.
 - **On the command line**, with `python3 ocr_subs.py`, which is what the films
   in this repository were transcribed with.
 
