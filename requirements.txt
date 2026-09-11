@@ -1,0 +1,6 @@
+# Only the command line needs these; the browser gets its own copies from
+# vendor/pyodide/. Versions are floors, not pins: the pipeline uses a small,
+# stable part of each.
+numpy>=1.24
+scipy>=1.10
+pillow>=10

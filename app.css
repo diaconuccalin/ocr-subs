@@ -1,0 +1,107 @@
+:root {
+  color-scheme: light dark;
+  --bg: #fbfaf8;
+  --fg: #1b1a18;
+  --muted: #6b6862;
+  --line: #ddd8d0;
+  --panel: #fff;
+  --accent: #3a5a8c;
+  --warn-bg: #fdf5e3;
+  --warn-fg: #7a5c12;
+  --warn-line: #e6d5a8;
+  --err-bg: #fbeceb;
+  --err-fg: #8c2f26;
+  --err-line: #e8c3bf;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181a; --fg: #e7e5e1; --muted: #9a968e; --line: #34363a;
+    --panel: #1e2023; --accent: #8fb0e0;
+    --warn-bg: #2a2417; --warn-fg: #e0c583; --warn-line: #4a4026;
+    --err-bg: #2c1a18; --err-fg: #f0a9a0; --err-line: #55302c;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main, footer { max-width: 60rem; margin: 0 auto; padding: 0 1.5rem; }
+main { padding-top: 2.5rem; }
+h1 { font-size: 1.6rem; margin: 0 0 .4rem; letter-spacing: -.01em; }
+h2 { font-size: .95rem; margin: 0 0 .75rem; font-weight: 600; }
+.lede { color: var(--muted); margin: 0 0 2rem; max-width: 44rem; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+a { color: var(--accent); }
+
+.frames { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+@media (max-width: 40rem) { .frames { grid-template-columns: 1fr; } }
+
+.frame {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.1rem;
+}
+.optional { color: var(--muted); font-weight: 400; font-size: .8rem; }
+
+.drop {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 6.5rem; padding: 1rem; text-align: center;
+  border: 1.5px dashed var(--line); border-radius: 8px;
+  color: var(--muted); cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.drop:hover, .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.drop-text { font-size: .9rem; }
+.frame-status { margin: .75rem 0 0; font-size: .85rem; color: var(--muted); }
+.frame-status.ok { color: var(--fg); }
+
+.controls { display: flex; align-items: center; gap: .75rem; margin: 1.5rem 0 0; flex-wrap: wrap; }
+.controls label { font-size: .9rem; color: var(--muted); }
+select {
+  font: inherit; font-size: .9rem; padding: .45rem .6rem;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: var(--panel); color: var(--fg);
+}
+button {
+  font: inherit; font-weight: 550; font-size: .95rem;
+  padding: .55rem 1.4rem; margin-left: auto;
+  border: 0; border-radius: 8px;
+  background: var(--accent); color: #fff; cursor: pointer;
+}
+button:disabled { opacity: .4; cursor: not-allowed; }
+
+.banner {
+  margin-top: 1.25rem; padding: .8rem 1rem; border-radius: 8px;
+  border: 1px solid var(--warn-line); background: var(--warn-bg); color: var(--warn-fg);
+  font-size: .88rem;
+}
+.banner.error { border-color: var(--err-line); background: var(--err-bg); color: var(--err-fg); }
+.banner.ok { border-color: var(--line); background: var(--panel); color: var(--fg); }
+.banner pre {
+  margin: .6rem 0 0; max-height: 11rem; overflow: auto;
+  font-size: .82rem; white-space: pre-wrap; word-break: break-word;
+}
+.banner strong { display: block; margin-bottom: .2rem; }
+
+.progress { margin-top: 1.5rem; }
+.bar { height: 7px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.bar-fill { height: 100%; width: 0; background: var(--accent); transition: width .25s ease-out; }
+.progress-line { display: flex; justify-content: space-between; gap: 1rem; margin: .55rem 0 0; font-size: .87rem; }
+.eta { color: var(--muted); }
+
+details { margin-top: 1.25rem; font-size: .87rem; }
+summary { cursor: pointer; color: var(--muted); }
+#log {
+  margin: .7rem 0 0; padding: .8rem; max-height: 18rem; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  font-size: .8rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
+
+footer { margin: 3.5rem auto; color: var(--muted); font-size: .82rem; }
+footer p { border-top: 1px solid var(--line); padding-top: 1.25rem; max-width: 44rem; }

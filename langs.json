@@ -1,0 +1,8 @@
+{
+  "_comment": "The languages the page offers, which are exactly the traineddata files shipped in vendor/tessdata/. Adding one means adding its .traineddata.gz there too.",
+  "default": "eng",
+  "languages": [
+    { "code": "eng", "name": "English" },
+    { "code": "por", "name": "Portuguese" }
+  ]
+}

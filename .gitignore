@@ -1,0 +1,25 @@
+# Everything is ignored by default. The film folders sitting beside this file
+# hold a few hundred megabytes of JPEGs and carry arbitrary human names, so an
+# allow-list is the only rule that stays safe when a new one appears.
+*
+
+!.gitignore
+!.nojekyll
+!README.md
+!CLAUDE.md
+!requirements.txt
+!ocr_subs.py
+
+# the page
+!index.html
+!app.css
+!app.js
+!worker-py.js
+!coi-serviceworker.js
+!langs.json
+!vendor/
+!vendor/**
+
+# tessdata/ is the command line's own copy, and is mostly symlinks into
+# /usr/share that would break on any other machine. The browser's copy of the
+# language data lives in vendor/tessdata/ and is committed.
