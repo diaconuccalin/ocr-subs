@@ -19,5 +19,22 @@ by Guido Zuidhof and contributors, MIT.
 The Python packages inside the Pyodide wheels carry their own licences: NumPy and
 SciPy BSD-3-Clause, Pillow MIT-CMU, CPython PSF-2.0.
 
-Only the LSTM tesseract cores are kept (`-lstm` and `-simd-lstm`), since the
-pipeline asks for OEM 1; the legacy-engine builds would be dead weight.
+## Which tesseract cores are kept, and why all three
+
+tesseract.js picks its core along two axes. The **engine** axis follows the OEM
+we ask for: the pipeline always passes OEM 1, so only the `-lstm` builds are
+ever requested and the legacy-engine ones would be dead weight. The **SIMD**
+axis follows what the visitor's browser can do, and there are three tiers:
+
+| file | chosen when |
+|---|---|
+| `tesseract-core-lstm.*` | no WebAssembly SIMD |
+| `tesseract-core-simd-lstm.*` | fixed-width SIMD |
+| `tesseract-core-relaxedsimd-lstm.*` | relaxed SIMD (recent Chrome, Edge) |
+
+**All three must be present.** A browser that asks for a tier we did not ship
+fails at the first cue with `importScripts ... failed to load`, and nothing
+earlier in the run gives any warning. This happened: the page was first tested
+on a Chromium old enough to want the fixed-width build, and shipping only that
+one broke every newer Chrome. If tesseract.js is ever upgraded, re-copy all
+three tiers together.
