@@ -154,6 +154,60 @@ BLOB_STROKES = 4.4
 # reaches is 1.67, so do not read the gap between them as room to spare.
 LINE_MERGE_RATIO = 1.7
 
+# Italic type leans forward, and nothing else in a subtitle bitmap does. The
+# slant is measured by deslanting: shear the ink by a candidate amount, take the
+# column-ink profile, and the shear that stands the vertical stems upright is
+# the one whose profile is most concentrated. `shear_slant` searches this range
+# at this step and returns the shear that wins, negative for a forward lean.
+#
+# The range is wider than any face needs so that a bad measurement lands outside
+# the gates below rather than being clamped into them.
+SHEAR_RANGE = 0.40
+SHEAR_STEP = 0.02
+
+# How far a band has to lean before it is italic rather than noise. Measured on
+# all 1716 bands of the eleven films: upright bands sit at exactly 0.00 and no
+# band of the five upright films reaches -0.08, while the italic populations
+# cluster per film at -0.16 (dizemos), -0.18 (taxonomia), -0.20 (on_the_sea,
+# ora_esta, test_extracted) and -0.34 (fragmentary). This sits in the middle of
+# a gap that is wide, unlike the one `LINE_MERGE_RATIO` has to live in.
+ITALIC_SHEAR = 0.10
+
+# A slant needs type to measure. Every false positive in the corpus is a band
+# carrying one or two words — `- Yes` and `Yes.` at +0.34, `Why?` at -0.30 —
+# and note the last one leans the right way, so requiring a forward lean is not
+# enough on its own. Those three span 2.6 to 3.2 line heights. A band narrower
+# than this is not measured and takes no verdict of its own.
+ITALIC_BAND_WIDTH = 4.0
+
+# The same gate for one word, which is necessarily narrower. Without it the word
+# rule fires 51 times across the corpus on marks that have no slant to measure:
+# 48 lone second-speaker hyphens in dizemos and 3 punctuation fragments in
+# taxonomia, all of them 0.0 to 0.3 line heights wide. The narrowest word that
+# is really italic is `eu`, at 1.3.
+ITALIC_WORD_WIDTH = 1.0
+
+# A word is too small a sample for the absolute test above, so it is matched
+# against the film's own italic angle instead, within this much. That is also
+# what makes the word rule safe: a film with no italic bands has no angle, so
+# the rule never runs there at all and the upright films cannot be touched by it.
+ITALIC_TOL = 0.04
+
+# Two runs of ink closer than this many line heights are one word. Only used to
+# split a band into words, so that a single italic word inside an upright line
+# can be found.
+ITALIC_WORD_GAP = 0.22
+
+# `shear_slant` costs 0.25s a cue on taxonomia if it reads every ink pixel,
+# which is what `deblob` costs and far too much for a measurement this small.
+# Striding the ink down to this many pixels takes it to 0.022s and changes no
+# verdict. Strided rather than sampled, so it stays a pure function of the mask
+# and `--jobs 4` still matches `--jobs 1`.
+ITALIC_SAMPLE = 40000
+
+# Below this many ink pixels there is nothing to measure at all.
+ITALIC_MIN_INK = 30
+
 # Language data tesseract did not ship with lives beside this script, since
 # installing it system-wide needs root. Anything already in the environment
 # wins, and the directory is simply absent for the films that only need `eng`.
@@ -217,7 +271,8 @@ def to_stderr(message):
 
 # One record per cue, carrying everything a caller needs to report on it.
 Cue = collections.namedtuple(
-    "Cue", "number stamp path text want got dropped blobs changes warning suspects"
+    "Cue",
+    "number stamp path text want got dropped blobs marked changes warning suspects",
 )
 
 # Everything decided before a single image is read: which cues exist, in what
@@ -268,6 +323,199 @@ def row_bands(ink):
     return [(a, b) for a, b in runs if b - a >= MIN_BAND_RATIO * tallest]
 
 
+def shear_slant(mask):
+    """How far the type in this mask leans, as a shear, or None if too little ink.
+
+    Deslanting: move every ink pixel to `c + s * (mean_row - r)` for each
+    candidate shear `s`, take the column-ink profile, and score it by its energy
+    `sum(p**2) / n**2`. Vertical stems are what a text line has most of, so the
+    profile is most concentrated at the shear that stands them upright, and the
+    shear that wins is the slant. Upright type returns 0.0 exactly; italic leans
+    forward, which in this convention is negative.
+
+    The energy is divided by the pixel count squared so the score does not
+    depend on how much ink there is, which is what lets one word be compared
+    against a whole line.
+    """
+    rows, cols = np.nonzero(mask)
+    if len(rows) < ITALIC_MIN_INK:
+        return None
+    if len(rows) > ITALIC_SAMPLE:
+        # Strided, not random: this has to stay a pure function of the mask, or
+        # `--jobs 4` would stop matching `--jobs 1`.
+        step = len(rows) // ITALIC_SAMPLE + 1
+        rows, cols = rows[::step], cols[::step]
+    lift = (rows.mean() - rows).astype(np.float64)
+    scale = float(len(rows)) ** 2
+    best, at = -1.0, 0.0
+    steps = int(round(SHEAR_RANGE / SHEAR_STEP))
+    for i in range(-steps, steps + 1):
+        s = i * SHEAR_STEP
+        moved = np.rint(cols + s * lift).astype(np.int64)
+        profile = np.bincount(moved - moved.min()).astype(np.float64)
+        score = float((profile * profile).sum()) / scale
+        if score > best:
+            best, at = score, s
+    return at
+
+
+def ink_width(mask):
+    """How many columns lie between the first and last inked one."""
+    cols = np.nonzero(mask.any(axis=0))[0]
+    return 0 if not len(cols) else int(cols[-1] - cols[0] + 1)
+
+
+def word_runs(band, gap):
+    """Column spans of one word each, runs of ink closer than `gap` joined."""
+    inked = band.any(axis=0)
+    runs, start = [], None
+    for i, on in enumerate(inked):
+        if on and start is None:
+            start = i
+        elif not on and start is not None:
+            runs.append([start, i])
+            start = None
+    if start is not None:
+        runs.append([start, len(inked)])
+    joined = []
+    for run in runs:
+        if joined and run[0] - joined[-1][1] < gap:
+            joined[-1][1] = run[1]
+        else:
+            joined.append(run)
+    return [(a, b) for a, b in joined]
+
+
+def band_slants(ink, bands, line_h):
+    """Each band's slant and how wide it is, in line heights.
+
+    The pair the italic rules are written against: a slant on its own says
+    nothing until you know there was enough type to measure it on.
+    """
+    out = []
+    for a, b in bands:
+        band = ink[a:b]
+        width = ink_width(band) / line_h if line_h else 0.0
+        out.append((shear_slant(band), width))
+    return out
+
+
+def is_italic_band(slant, width):
+    """Whether a band's own measurement says italic, on the absolute test."""
+    return (
+        slant is not None
+        and slant <= -ITALIC_SHEAR
+        and width >= ITALIC_BAND_WIDTH
+    )
+
+
+def band_italics(ink, bands, line_h, film_slant):
+    """One verdict per band, plus one per word inside it.
+
+    The band verdict is the absolute test above. The word verdicts are the
+    relative one: a run is italic when it leans within `ITALIC_TOL` of the
+    film's own italic angle, upright when it leans within the same of nothing,
+    and None — no evidence, take the band's word for it — otherwise. A run
+    narrower than `ITALIC_WORD_WIDTH` is never measured, because a hyphen or a
+    comma has no stems and its slant is noise.
+
+    `film_slant` of None means the film showed no italic bands at all, and the
+    word rule is then switched off entirely rather than being pointed at a
+    guess.
+    """
+    verdicts = []
+    for (a, b), (slant, width) in zip(bands, band_slants(ink, bands, line_h)):
+        italic = is_italic_band(slant, width)
+        runs = []
+        for lo, hi in word_runs(ink[a:b], ITALIC_WORD_GAP * line_h):
+            here = None
+            if film_slant is not None and (hi - lo) / line_h >= ITALIC_WORD_WIDTH:
+                measured = shear_slant(ink[a:b, lo:hi])
+                if measured is not None:
+                    if abs(measured - film_slant) <= ITALIC_TOL:
+                        here = True
+                    elif abs(measured) <= ITALIC_TOL:
+                        here = False
+            runs.append(here)
+        verdicts.append((italic, runs))
+    return verdicts
+
+
+# A closing tag should not swallow the full stop after the word it emphasises,
+# so a span ends at the last letter or digit in it.
+TAIL_PUNCTUATION = re.compile(r"[^0-9A-Za-z\u00c0-\u024f]+$")
+
+
+def mark_italics(text, verdicts):
+    """Wrap the italic parts of one cue's text in `<i>`.
+
+    Lines pair with bands by position, and words with word runs by position.
+    Neither pairing is guaranteed — a band holding two lines of type reports one
+    band for two lines of text, which is the `got > want` population — so each
+    is checked and falls back rather than being trusted: a line count that does
+    not match the band count drops to "wrap the cue only if every band of it is
+    italic", and a word count that does not match the run count lets the band's
+    own verdict cover the whole line.
+
+    A cue that is italic throughout is wrapped once, opening before its first
+    line and closing after its last, which is how the tag is usually written.
+    """
+    if not text or not verdicts:
+        return text
+    lines = text.split("\n")
+    if all(italic for italic, _ in verdicts):
+        return "<i>" + text + "</i>"
+    if len(lines) != len(verdicts):
+        return text
+    out = []
+    for line, (italic, runs) in zip(lines, verdicts):
+        words = line.split()
+        if not words:
+            out.append(line)
+            continue
+        if len(words) == len(runs):
+            flags = [italic if run is None else run for run in runs]
+        else:
+            flags = [italic] * len(words)
+        out.append(" ".join(_tag_words(words, flags)))
+    return "\n".join(out)
+
+
+def _tag_words(words, flags):
+    """The words of one line with `<i>` opened and closed around each run."""
+    tagged = list(words)
+    start = None
+    for i in range(len(words) + 1):
+        on = i < len(words) and flags[i]
+        if on and start is None:
+            start = i
+        elif not on and start is not None:
+            last = i - 1
+            # A span covering the whole line keeps its full stop, the way a
+            # whole italic cue does; a span covering part of one does not, so
+            # `the <i>stories</i>.` reads as the emphasis of a word rather than
+            # of the sentence it ends.
+            whole = start == 0 and last == len(words) - 1
+            tail = None if whole else TAIL_PUNCTUATION.search(tagged[last])
+            cut = tail.start() if tail and tail.start() else len(tagged[last])
+            # Close before opening: where the run is one word long these are
+            # the same element, and prepending first would shift `cut`.
+            tagged[last] = tagged[last][:cut] + "</i>" + tagged[last][cut:]
+            tagged[start] = "<i>" + tagged[start]
+            start = None
+    return tagged
+
+
+def count_italics(text):
+    """How many `<i>` spans a cue came out with, for `--dry-run` to report."""
+    return text.count("<i>")
+
+
+def strip_italics(text):
+    """The same text without its tags, for the steps that read words."""
+    return text.replace("<i>", "").replace("</i>", "")
+
+
 def film_line_height(paths, mapper=map, progress=None):
     """How tall one line of type is across a whole film.
 
@@ -279,30 +527,50 @@ def film_line_height(paths, mapper=map, progress=None):
     own measurement — every constant here is calibrated against the per-frame
     band, and swapping this in would rescale every cue.
 
+    Also returns the film's italic angle: the median slant of the bands wide
+    enough and leaning far enough to be italic on their own account, or None
+    where the film showed none. A word is too small a sample for the absolute
+    test, so that angle is what `band_italics` matches single words against —
+    and a film without one has its word rule switched off rather than pointed
+    at a guess.
+
     Deliberately skips `despeckle` and `deblob`, which cost around five times
     what the rest of this does and move the median not at all: 389/389, 213/212
-    and 194/194 on taxonomia, o_que and test_extracted.
+    and 194/194 on taxonomia, o_que and test_extracted. The same argument
+    carries the slant: a median over a whole film does not move for the few
+    frames that carry dirt, and the measurement that decides a cue is the
+    despeckled one in `ocr`.
 
     `progress(done, total)` is called once a frame, for a front end that has a
     bar to move. The command line passes nothing and prints nothing, so its
     stdout is unchanged; the page passes one because this pass runs before the
     first cue and would otherwise look like a hang.
     """
-    heights = []
-    for done, bands in enumerate(mapper(frame_bands, paths), 1):
+    heights, leans = [], []
+    for done, (bands, slants) in enumerate(mapper(frame_bands, paths), 1):
         heights += [b - a for a, b in bands]
+        leans += [s for s, w in slants if is_italic_band(s, w)]
         if progress is not None:
             progress(done, len(paths))
-    return float(np.median(heights)) if heights else 0.0
+    return (
+        float(np.median(heights)) if heights else 0.0,
+        float(np.median(leans)) if leans else None,
+    )
 
 
 def frame_bands(path):
-    """One frame's bands, so the pool hands back band lists rather than masks.
+    """One frame's bands and their slants, so the pool hands back neither masks
+    nor a second read of the same image.
 
     Mapping `load_ink` itself would queue every task at once and keep an ink
     mask alive for each; these frames are 8-11k px wide and that is gigabytes.
     """
-    return row_bands(load_ink(path))
+    ink = load_ink(path)
+    bands = row_bands(ink)
+    if not bands:
+        return [], []
+    line_h = float(np.median([b - a for a, b in bands]))
+    return bands, band_slants(ink, bands, line_h)
 
 
 def despeckle(ink, bands):
@@ -481,7 +749,7 @@ def read(png, lang, workdir):
     return clean("\n".join(lines), lang), mean
 
 
-def ocr(path, lang="eng", film_line_h=0.0):
+def ocr(path, lang="eng", film_line_h=0.0, film_slant=None, italics=True):
     """Transcribe one frame, reading it both plain and de-gouged.
 
     Neither render wins everywhere — closing rescues the drop-shadow face and
@@ -491,12 +759,18 @@ def ocr(path, lang="eng", film_line_h=0.0):
     `film_line_h` is how tall a line of type is in this film, from
     `film_line_height`, and is only consulted to catch a band that holds two
     lines joined by a mark. Zero, the default, leaves each frame to speak for
-    itself. Everything else here stays a function of this frame alone.
+    itself. `film_slant` comes from the same pass and is what a single italic
+    word is matched against. Everything else here stays a function of this
+    frame alone.
+
+    The italics are measured on the despeckled, deblobbed mask and applied to
+    whichever render won, because a mark being sealed or not does not change
+    which way the type leans.
     """
     ink = load_ink(path)
     bands = row_bands(ink)
     if not bands:
-        return "", 0, 0, 0
+        return "", 0, 0, 0, 0
     ink, dropped = despeckle(ink, bands)
     ink, blobs = deblob(ink)
     bands = row_bands(ink) or bands
@@ -510,7 +784,9 @@ def ocr(path, lang="eng", film_line_h=0.0):
             render(close_gouges(ink, line_h), line_h), lang, workdir
         )
     text = sealed if sealed_conf > plain_conf else plain
-    return text, len(bands), dropped, blobs
+    if italics:
+        text = mark_italics(text, band_italics(ink, bands, line_h, film_slant))
+    return text, len(bands), dropped, blobs, count_italics(text)
 
 
 def strip_speck_accent(match):
@@ -776,7 +1052,14 @@ def reconcile(before, after, lang="eng"):
     words = english_words()
     if not words:
         return None
-    if difflib.SequenceMatcher(None, before, after).ratio() < MERGE_NEAR_RATIO:
+    # Every test below asks the word list a question, so it asks it about the
+    # words rather than about the markup: `<i>tear` is in no dictionary. The
+    # tags stay on whichever word wins.
+    bare = strip_italics
+    if (
+        difflib.SequenceMatcher(None, bare(before), bare(after)).ratio()
+        < MERGE_NEAR_RATIO
+    ):
         return None
     left, right = before.split("\n"), after.split("\n")
     if len(left) != len(right):
@@ -787,18 +1070,24 @@ def reconcile(before, after, lang="eng"):
         if len(words_before) != len(words_after):
             return None
         lines.append(list(zip(words_before, words_after)))
-    differing = [pair for line in lines for pair in line if pair[0] != pair[1]]
+    differing = [
+        pair for line in lines for pair in line if bare(pair[0]) != bare(pair[1])
+    ]
     if not differing or len(differing) * 2 > sum(len(line) for line in lines):
         return None
-    if any(edit_distance(x, y) > MERGE_NEAR_EDITS for x, y in differing):
+    if any(edit_distance(bare(x), bare(y)) > MERGE_NEAR_EDITS for x, y in differing):
         return None
     if not any(
-        in_word_list(x, words) or in_word_list(y, words) for x, y in differing
+        in_word_list(bare(x), words) or in_word_list(bare(y), words)
+        for x, y in differing
     ):
         return None
     return "\n".join(
         " ".join(
-            y if x != y and in_word_list(y, words) and not in_word_list(x, words)
+            y
+            if bare(x) != bare(y)
+            and in_word_list(bare(y), words)
+            and not in_word_list(bare(x), words)
             else x
             for x, y in line
         )
@@ -830,7 +1119,9 @@ def repeat_notes(stamps, texts, folded, lang):
                     )
                 )
         elif gap <= MERGE_GAP_MS:
-            alike = difflib.SequenceMatcher(None, before, after).ratio()
+            alike = difflib.SequenceMatcher(
+                None, strip_italics(before), strip_italics(after)
+            ).ratio()
             if alike >= MERGE_NEAR_RATIO and reconcile(before, after, lang) is None:
                 notes.append(
                     "warning: cue {} and {} are {:.0f}% alike {} ms apart, "
@@ -1056,7 +1347,7 @@ def plan(image_dir, srt=None, corrections_name="corrections.json",
 
 
 def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1,
-               progress=None):
+               progress=None, italics=True):
     """Steps 3 to 5 for every cue, yielding one Cue each, in cue order.
 
     `workers` only changes how many images are in flight: `ocr` is a pure
@@ -1080,20 +1371,30 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1,
             # it would fight over the same cores for a net loss.
             os.environ.setdefault("OMP_THREAD_LIMIT", "1")
             pool = concurrent.futures.ThreadPoolExecutor(workers)
-            film_line_h = film_line_height(paths, pool.map, progress)
+            film_line_h, film_slant = film_line_height(paths, pool.map, progress)
             results = pool.map(
-                ocr, paths, itertools.repeat(lang), itertools.repeat(film_line_h)
+                ocr, paths, itertools.repeat(lang), itertools.repeat(film_line_h),
+                itertools.repeat(film_slant), itertools.repeat(italics),
             )
         else:
-            film_line_h = film_line_height(paths, progress=progress)
-            results = (ocr(path, lang, film_line_h) for path in paths)
+            film_line_h, film_slant = film_line_height(paths, progress=progress)
+            results = (
+                ocr(path, lang, film_line_h, film_slant, italics)
+                for path in paths
+            )
 
-        for number, (stamp, path, (text, want, dropped, blobs)) in enumerate(
+        for number, (stamp, path, (text, want, dropped, blobs, marked)) in enumerate(
             zip(stamps, paths, results), 1
         ):
             changes = None
-            if stamp in corrections and corrections[stamp] != text:
-                changes = word_diff(text, corrections[stamp])
+            # A sidecar entry is written as plain text, so it is compared
+            # against the words rather than against the markup. An entry that
+            # agrees with the OCR stays the silent no-op it always was and
+            # keeps the italics; one that changes a word replaces the text
+            # whole, italics included, and a person wanting them back writes
+            # the tags into the sidecar themselves.
+            if stamp in corrections and corrections[stamp] != strip_italics(text):
+                changes = word_diff(strip_italics(text), corrections[stamp])
                 text = corrections[stamp]
             got = len(text.splitlines())
             # The line-count check runs one way only. A band is a run of inked
@@ -1115,8 +1416,8 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1,
                 )
             else:
                 warning = None
-            yield Cue(number, stamp, path, text, want, got, dropped, blobs, changes,
-                      warning, suspects(text, lang))
+            yield Cue(number, stamp, path, text, want, got, dropped, blobs, marked,
+                      changes, warning, suspects(strip_italics(text), lang))
     finally:
         if pool is not None:
             pool.shutdown(wait=False)
@@ -1159,6 +1460,11 @@ def main():
         help="keep every image as its own cue, even when the rip split one subtitle",
     )
     ap.add_argument(
+        "--no-italics",
+        action="store_true",
+        help="do not mark italic type with <i>",
+    )
+    ap.add_argument(
         "--jobs",
         type=int,
         default=1,
@@ -1177,7 +1483,8 @@ def main():
     applied = []
     warnings = 0
     for cue in transcribe(
-        p.stamps, p.by_timestamp, p.corrections, args.lang, args.jobs
+        p.stamps, p.by_timestamp, p.corrections, args.lang, args.jobs,
+        italics=not args.no_italics,
     ):
         texts[cue.stamp] = cue.text
         if cue.changes is not None:
@@ -1195,6 +1502,8 @@ def main():
                 notes.append("{} speck removed".format(cue.dropped))
             if cue.blobs:
                 notes.append("{} blob removed".format(cue.blobs))
+            if cue.marked:
+                notes.append("{} italic".format(cue.marked))
             print("{}{}\n{}\n".format(
                 cue.stamp,
                 "  [{}]".format(", ".join(notes)) if notes else "",
