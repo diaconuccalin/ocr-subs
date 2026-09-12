@@ -133,7 +133,7 @@ silently drop a cue.
    - Folds the four curly quotes to straight (`QUOTE_MAP`, applied before splitting).
    - Per line: `" ".join(line.split())`; empty lines dropped entirely.
    - **English only** (`lang == "eng"`): the font makes `I`, `l`, `|` and a dotless
-     `i` near-identical. Four subs, all anchored by `(?<![^\s-])` — "preceded by
+     `i` near-identical. Four of the subs are anchored by `(?<![^\s-])` — "preceded by
      whitespace, a hyphen, or start of string". The hyphen is there because a leading
      `-` marks the second speaker in a two-line cue and shouldn't detach the word.
      - Three run one way (`:358-360`): a bare `|` or `l` is the pronoun "I", as is
@@ -147,12 +147,30 @@ silently drop a cue.
      `- It ls nothing` → `- It is nothing`; `la casa`, `tsunami`, `the lst of many`,
      `he sits`, `Ts and Ls` and `call l up`'s neighbours untouched.
      Skipped for `por`, where those shapes are real words.
+   - **Three more marks-read-as-characters subs**, added after `deblob` and aimed at
+     the dirt it cannot reach — the marks fused to a glyph, which no image step can
+     lift out. An underscore between letters is a mark; so is a capital inside a
+     lower-case word (`tWenty`), except that words beginning with a capital do this
+     legitimately (`McDonald`, `YouTube`), so only lower-case-initial words are
+     touched. **Known and accepted: this lower-cases `iPhone` and `eBay`.** Telling
+     those from `tWenty` needs a word list, and a cosmetic `iphone` is a cheaper
+     mistake than leaving visible garbage.
+   - **The apostrophe sub is the fussy one**, because most apostrophes are real. One
+     between two letters survives only if what follows it is a contraction or a
+     possessive — `APOSTROPHE_TAILS`, every entry of which was found in these films
+     bar the last four. A capital after it means a name (`O'Brien`) and nothing after
+     it means a plural possessive (`guys'`); requiring a lower-case letter after the
+     apostrophe leaves both alone, and `(?<!'n)` spares `rock'n'roll`. So
+     `about'tWenty` and `Scope'screen` lose theirs while `don't`, `cinema's`,
+     `y'all` and `ma'am` keep theirs.
    - **How thin the evidence has to be before a rule is worth adding.** The `ts`/`ls`
      sub was measured before it was written: it fires **3 times in ~1,240 cues** of
-     raw OCR across the six English films, and all three are right. That is the bar —
-     the other candidates found in the same sweep (`/ast` → `last`, mid-sentence
-     `In` → `in`, bare `1` → `I`) were each correct too, and were all rejected for
-     resting on one or two observations. See the corrections analysis below.
+     raw OCR across the six English films, and all three are right. The three above
+     were measured the same way and change **6 lines in 973** — 5 right, 1 garbage
+     either way, none wrong. That is the bar; candidates found in the same sweep
+     (`/ast` → `last`, mid-sentence `In` → `in`, bare `1` → `I`) were each correct
+     too and were rejected for resting on one or two observations. See the
+     corrections analysis below.
 
 ### `deblob`: the dirt `despeckle` does not catch
 

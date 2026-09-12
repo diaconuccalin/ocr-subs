@@ -69,6 +69,13 @@ PUNCT_GAP = 0.5
 # aggressive "correction" would do more harm than good.
 QUOTE_MAP = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
 
+# What may legitimately follow an apostrophe inside an English word: the
+# contractions, the possessive `s`, and the few elisions that turn up in
+# speech. Everything on this list was found in the films except the last four,
+# which are here because they are ordinary English and the list only ever
+# prevents a change.
+APOSTROPHE_TAILS = r"(?:s|t|m|d|re|ve|ll|am|all|n|clock|em|til|cause)"
+
 # Some films set part of their cues in a drop-shadow display face: the glyph is
 # drawn over an offset copy of itself, and where the two meet the render knocks
 # a white gouge out of the stroke. Thresholding leaves those letters shredded
@@ -380,6 +387,28 @@ def clean(raw, lang="eng"):
             # has lost its dot comes back as `t` or `l`, and neither `ts` nor
             # `ls` is a word standing on its own.
             line = re.sub(r"(?<![^\s-])[tl]s\b(?!')", "is", line)
+            # A mark landing in the gap between two words is read as whatever
+            # it resembles. An underscore is never part of a word, and a
+            # capital inside a lower-case one is not a letter either — except
+            # in words that start with a capital (`McDonald`, `YouTube`), so
+            # only lower-case-initial words are touched.
+            line = re.sub(r"(?<=[A-Za-z])_(?=[A-Za-z])", " ", line)
+            line = re.sub(r"\b[a-z][a-z]*[A-Z][a-z]",
+                          lambda m: m.group(0).lower(), line)
+            # Same again for an apostrophe, which is harder because most of
+            # them are real. One between two letters is kept only when what
+            # follows it is a contraction or a possessive; `about'tWenty` and
+            # `Scope'screen` are marks, `don't` and `cinema's` are not. A
+            # capital after the apostrophe means a name (`O'Brien`), and one
+            # at the end of a word is a plural possessive (`guys'`); both are
+            # left alone by requiring a lower-case letter after it. The
+            # `(?<!'n)` is for `rock'n'roll`, whose second apostrophe is
+            # otherwise followed by a perfectly ordinary-looking word.
+            line = re.sub(
+                r"(?<=[A-Za-z])(?<!'n)'(?=[a-z])"
+                r"(?!" + APOSTROPHE_TAILS + r"(?![A-Za-z]))",
+                " ", line,
+            )
         lines.append(line)
     return "\n".join(lines)
 
