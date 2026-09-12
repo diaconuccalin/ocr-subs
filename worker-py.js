@@ -33,6 +33,10 @@ function tesseract(png, lang) {
   return text;
 }
 
+// Python source, carried in a template literal: nothing in here may contain a
+// backtick, which closes the string and leaves the whole worker unparseable —
+// so quote names in plain prose rather than in the Markdown the rest of the
+// project writes.
 const DRIVER = `
 import json, sys
 sys.path.insert(0, "/code")
@@ -67,7 +71,7 @@ def do_plan(image_dir, srt_name):
 def do_run(lang):
     """Steps 3 to 6, reporting each cue as it lands.
 
-    `transcribe` reads every image once for the film's line height before the
+    transcribe reads every image once for the film's line height before the
     first cue lands, so that pass reports too: on a long film it is a minute of
     work with nothing to show for it, and a still bar reads as a hang.
     """
@@ -100,12 +104,22 @@ function safeName(name) {
 async function init(sab) {
   ctl = new Int32Array(sab, 0, CTL);
   data = new Uint8Array(sab, CTL * 4);
+  // The 35 MB arrives in three distinguishable pieces, so say which one is in
+  // flight. One message that never changes cannot be told apart from a hang,
+  // and that is the only thing the page had to say for a minute-long download.
+  const stage = (text) => self.postMessage({ type: "stage", text });
+  stage("Starting Python… (13 MB)");
   py = await loadPyodide({
     indexURL: new URL("./vendor/pyodide/", self.location).href,
     stdout: (line) => self.postMessage({ type: "debug", line }),
     stderr: (line) => self.postMessage({ type: "debug", line }),
   });
-  await py.loadPackage(["numpy", "scipy", "Pillow"]);
+  stage("Loading numpy, scipy and Pillow… (18 MB)");
+  await py.loadPackage(["numpy", "scipy", "Pillow"], {
+    messageCallback: (line) => self.postMessage({ type: "debug", line }),
+    errorCallback: (line) => self.postMessage({ type: "debug", line }),
+  });
+  stage("Fetching the pipeline…");
 
   // The page serves the very same file the command line runs, and the word
   // list it looks for beside itself.

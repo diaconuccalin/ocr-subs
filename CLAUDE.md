@@ -594,6 +594,21 @@ Gotchas found the hard way:
   Names from the browser are reduced to a basename before use.
 - `showSaveFilePicker` must be the **first** statement in the click handler, before
   any `await`, or the click no longer counts as the gesture that permits a dialog.
+- **`DRIVER` is a JS template literal, so a backtick anywhere in that Python
+  source closes the string and the whole worker stops parsing.** A module worker
+  that fails to parse sends no message at all, so the page sat on "Downloading
+  Python and the OCR engine…" for ever with nothing else to say — the runtime
+  was never the problem, and every asset was being served correctly. It got in
+  as Markdown quoting in a docstring (``` `transcribe` ```), which is how the
+  rest of the project writes prose. Quote names bare inside `DRIVER`.
+  **`cp worker-py.js /tmp/x.mjs && node --check /tmp/x.mjs` catches it**, and is
+  worth running on both JS files before a push, because nothing else does.
+- **A failure before `ready` is now visible.** `worker.onerror` and
+  `onmessageerror` put the message in the report banner instead of letting the
+  page hang silently, the download announces its three pieces as they start
+  (Python, then the packages, then the pipeline) so a stalled stage can be
+  named, and two minutes without `ready` prints the hard-refresh and
+  unregister-the-service-worker advice.
 - **The run has two passes and the bar shows both.** `film_line_height` reads
   every image before the first cue lands, so `transcribe` takes a `progress`
   callback; `do_run` passes `js_measure`, which posts a `measure` message, and

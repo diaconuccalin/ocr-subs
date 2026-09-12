@@ -335,6 +335,7 @@ async function main() {
       state.runtimeReady = true;
       if (!state.images.length) { phase("Ready.", 0); els.progress.hidden = true; }
     }
+    else if (message.type === "stage") phase(message.text);
     else if (message.type === "loading") phase("Reading the folder… " + message.done);
     else if (message.type === "planned") planned(message.summary);
     else if (message.type === "measure") {
@@ -357,8 +358,30 @@ async function main() {
       say("error", "The run stopped", message.error);
     }
   };
+  // A worker that fails to parse or import never sends a message at all, and
+  // the page used to sit on the download line for ever with nothing to say.
+  worker.onerror = (event) => {
+    event.preventDefault();
+    say("error", "The Python worker could not start",
+        (event.message || "worker error") +
+        (event.filename ? "\n" + event.filename + ":" + event.lineno : ""));
+    els.progress.hidden = true;
+  };
+  worker.onmessageerror = () => say("error", "A message from the worker could not be read");
+
   phase("Downloading Python and the OCR engine… (about 35 MB, once)");
   worker.postMessage({ type: "init", sab });
+  // 35 MB is a minute on a slow line and ten seconds on a fast one; past two
+  // it is not slow, it is stuck, and the two look identical from here.
+  setTimeout(() => {
+    if (!state.runtimeReady) {
+      say("", "This is taking longer than it should",
+          "The runtime is about 35 MB and is normally in the cache after the first visit. " +
+          "If it does not arrive: reload with a hard refresh (Ctrl-Shift-R), and if that " +
+          "does not do it, unregister the service worker for this page in the browser's " +
+          "developer tools and reload. The console shows which file is outstanding.");
+    }
+  }, 120000);
 
   els["input-images"].addEventListener("change", (e) => acceptImages([...e.target.files]));
   els["input-srt"].addEventListener("change", (e) => {
