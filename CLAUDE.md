@@ -868,6 +868,15 @@ main thread  app.js        the UI, and tesseract.js, which does the recognition
   worker-py.js             Pyodide running ocr_subs.py, blocking on each OCR call
 ```
 
+**The page takes no template.** It asks for one thing, the folder of images, and
+its cues are always the filenames sorted chronologically and numbered 1..N —
+`do_plan` calls `plan` with no `srt`, so `render_srt` always goes through
+`build`. The upload frame and a scan that used to pick a `[sub_duration]` file
+out of the chosen folder were both removed: the page had no way to show which
+template it had found, so the numbering changed with the folder's contents and
+nothing on screen said why. `--srt` is a command-line feature, like the
+corrections sidecar, and ten of the eleven films use it there.
+
 `read` is synchronous and tesseract.js is promise-based, so the Python worker really
 does block: it writes the render into a `SharedArrayBuffer`, posts to the page, and
 `Atomics.wait`s. That is why the worker exists (blocking the main thread is not

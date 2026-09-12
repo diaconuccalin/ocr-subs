@@ -48,13 +48,16 @@ def _tesseract(png, lang, workdir):
 ocr_subs.TESSERACT = _tesseract
 _state = {}
 
-def do_plan(image_dir, srt_name):
-    """Steps 1 and 2. Fatal problems come back as data, not as a traceback."""
+def do_plan(image_dir):
+    """Steps 1 and 2. Fatal problems come back as data, not as a traceback.
+
+    The page takes no template, so the cues are always the filenames sorted
+    chronologically and numbered 1..N. The command line keeps its --srt.
+    """
     notes = []
     try:
         p = ocr_subs.plan(
             ocr_subs.Path(image_dir),
-            srt_name or None,
             no_corrections=True,
             report=notes.append,
         )
@@ -151,7 +154,7 @@ async function init(sab) {
   self.postMessage({ type: "ready" });
 }
 
-async function load({ files, template, folder }) {
+async function load({ files, folder }) {
   const dir = "/work/" + (safeName(folder) || "subtitles");
   try { py.FS.unmount("/work"); } catch (e) { /* nothing mounted yet */ }
   for (const p of ["/work", dir]) { try { py.FS.mkdir(p); } catch (e) { /* exists */ } }
@@ -167,15 +170,7 @@ async function load({ files, template, folder }) {
     written += 1;
     if (written % 25 === 0) self.postMessage({ type: "loading", done: written });
   }
-  let templateName = "";
-  if (template) {
-    templateName = safeName(template.name);
-    py.FS.writeFile(dir + "/" + templateName,
-      new Uint8Array(await template.arrayBuffer()));
-  }
-  const summary = py.runPython(
-    `do_plan(${JSON.stringify(dir)}, ${JSON.stringify(templateName)})`
-  );
+  const summary = py.runPython(`do_plan(${JSON.stringify(dir)})`);
   self.postMessage({ type: "planned", summary: JSON.parse(summary) });
 }
 

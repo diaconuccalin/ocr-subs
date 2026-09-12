@@ -21,27 +21,14 @@
 
   <div id="unsupported" class="banner error" hidden></div>
 
-  <div class="frames">
-    <section class="frame" id="frame-images">
-      <h2>Subtitle images</h2>
-      <label class="drop" id="drop-images">
-        <input type="file" id="input-images" multiple accept=".jpg,.jpeg" webkitdirectory>
-        <span class="drop-text">Choose the folder of images, or drop it here</span>
-      </label>
-      <p class="frame-status" id="status-images">No images yet.</p>
-    </section>
-
-    <section class="frame" id="frame-srt">
-      <h2>Template SRT <span class="optional">optional</span></h2>
-      <label class="drop" id="drop-srt">
-        <input type="file" id="input-srt" accept=".srt">
-        <span class="drop-text">Choose a template, or drop it here</span>
-      </label>
-      <p class="frame-status" id="status-srt">
-        None — the cues will be numbered from the filenames.
-      </p>
-    </section>
-  </div>
+  <section class="frame" id="frame-images">
+    <h2>Subtitle images</h2>
+    <label class="drop" id="drop-images">
+      <input type="file" id="input-images" multiple accept=".jpg,.jpeg" webkitdirectory>
+      <span class="drop-text">Choose the folder of images, or drop it here</span>
+    </label>
+    <p class="frame-status" id="status-images">No images yet.</p>
+  </section>
 
   <div class="controls">
     <label for="lang">Language</label>

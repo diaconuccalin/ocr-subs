@@ -9,15 +9,15 @@ const CAPACITY = 4 << 20;      // the largest render measured is 24 KB
 const SEED_SECONDS_PER_CUE = 0.75;   // measured; replaced by the real rate after a few cues
 
 const els = {};
-for (const id of ["unsupported", "input-images", "input-srt", "status-images",
-                  "status-srt", "drop-images", "drop-srt", "lang", "start",
+for (const id of ["unsupported", "input-images", "status-images",
+                  "drop-images", "lang", "start",
                   "report", "progress", "bar-fill", "phase", "eta", "log",
                   "log-box", "log-count"]) {
   els[id] = document.getElementById(id);
 }
 
 const state = {
-  images: [], template: null, templateAuto: false, folder: "",
+  images: [], folder: "",
   cues: 0, suggested: "subtitles.srt", ready: false, running: false,
   runtimeReady: false,
 };
@@ -167,48 +167,15 @@ async function acceptImages(files) {
   const path = first.webkitRelativePath || first._path || "";
   state.folder = path.includes("/") ? path.split("/")[0] : "";
 
-  // Every film folder here holds both the template and a previous filled copy,
-  // so picking blind would be wrong half the time: take the one that still has
-  // placeholders in it.
-  if (!state.template || state.templateAuto) {
-    state.template = null; state.templateAuto = false;
-    const candidates = files.filter((f) => /\.srt$/i.test(f.name));
-    const templates = [];
-    for (const file of candidates) {
-      if ((await file.text()).includes("[sub_duration]")) templates.push(file);
-    }
-    if (templates.length === 1) {
-      state.template = templates[0];
-      state.templateAuto = true;
-    }
-  }
   els["status-images"].textContent =
     images.length + " image(s)" + (state.folder ? " from " + state.folder : "");
   els["status-images"].className = "frame-status ok";
   revalidate();
 }
 
-function acceptTemplate(file) {
-  state.template = file;
-  state.templateAuto = false;
-  revalidate();
-}
-
-function showTemplate() {
-  if (!state.template) {
-    els["status-srt"].textContent = "None — the cues will be numbered from the filenames.";
-    els["status-srt"].className = "frame-status";
-  } else {
-    els["status-srt"].textContent =
-      state.template.name + (state.templateAuto ? " (found in the folder)" : "");
-    els["status-srt"].className = "frame-status ok";
-  }
-}
-
 // --------------------------------------------------------------- validating
 
 function revalidate() {
-  showTemplate();
   if (!state.images.length) return;
   state.ready = false;
   els.start.disabled = true;
@@ -218,7 +185,6 @@ function revalidate() {
   worker.postMessage({
     type: "load",
     files: state.images,
-    template: state.template,
     folder: state.folder,
   });
 }
@@ -389,24 +355,14 @@ async function main() {
   }, 120000);
 
   els["input-images"].addEventListener("change", (e) => acceptImages([...e.target.files]));
-  els["input-srt"].addEventListener("change", (e) => {
-    if (e.target.files[0]) acceptTemplate(e.target.files[0]);
+  const zone = els["drop-images"];
+  zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("over"); });
+  zone.addEventListener("dragleave", () => zone.classList.remove("over"));
+  zone.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    zone.classList.remove("over");
+    acceptImages(await filesFromDrop(e.dataTransfer));
   });
-  for (const [id, handler] of [["drop-images", acceptImages],
-                               ["drop-srt", (f) => acceptTemplate(f[0])]]) {
-    const zone = els[id];
-    zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("over"); });
-    zone.addEventListener("dragleave", () => zone.classList.remove("over"));
-    zone.addEventListener("drop", async (e) => {
-      e.preventDefault();
-      zone.classList.remove("over");
-      const files = await filesFromDrop(e.dataTransfer);
-      if (id === "drop-srt") {
-        const srt = files.filter((f) => /\.srt$/i.test(f.name));
-        if (srt.length) handler(srt);
-      } else handler(files);
-    });
-  }
 }
 
 main();

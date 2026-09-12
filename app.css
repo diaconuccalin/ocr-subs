@@ -37,17 +37,12 @@ h2 { font-size: .95rem; margin: 0 0 .75rem; font-weight: 600; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
 a { color: var(--accent); }
 
-.frames { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-@media (max-width: 40rem) { .frames { grid-template-columns: 1fr; } }
-
 .frame {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 1.1rem;
 }
-.optional { color: var(--muted); font-weight: 400; font-size: .8rem; }
-
 .drop {
   display: flex; align-items: center; justify-content: center;
   min-height: 6.5rem; padding: 1rem; text-align: center;
