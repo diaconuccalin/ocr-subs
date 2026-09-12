@@ -315,6 +315,10 @@ def clean(raw, lang="eng"):
             line = re.sub(r"(?<![^\s-])[|l](?![^\s'])", "I", line)
             line = re.sub(r"(?<![^\s-])[|l](?=')", "I", line)
             line = re.sub(r"(?<![^\s-])[|l]f\b", "If", line)
+            # The same confusion running the other way: a lowercase `i` that
+            # has lost its dot comes back as `t` or `l`, and neither `ts` nor
+            # `ls` is a word standing on its own.
+            line = re.sub(r"(?<![^\s-])[tl]s\b(?!')", "is", line)
         lines.append(line)
     return "\n".join(lines)
 

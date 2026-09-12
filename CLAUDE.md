@@ -65,10 +65,10 @@ Three functions are the seam both front ends drive, so that the browser has no
 code path of its own:
 
 - `plan` (`:437`) — steps 1 and 2. Everything decided before an image is read.
-- `transcribe` (`:490`) — steps 3 to 5, a generator yielding one `Cue` (`:104`) per cue.
-- `render_srt` (`:537`) — step 6.
+- `transcribe` (`:494`) — steps 3 to 5, a generator yielding one `Cue` (`:104`) per cue.
+- `render_srt` (`:535`) — step 6.
 
-`main` (`:543`) is a thin consumer of those three. `Abort` (`:88`) subclasses
+`main` (`:541`) is a thin consumer of those three. `Abort` (`:88`) subclasses
 `SystemExit`, so `raise Abort(...)` prints and exits 1 on the command line exactly
 as a bare `SystemExit` did, while the browser can catch it and tell a bad input
 apart from a crash. Warnings that the command line prints to stderr go through a
@@ -127,13 +127,27 @@ silently drop a cue.
    computed on tesseract's raw words, so cleaning never influences which render wins.
    - Folds the four curly quotes to straight (`QUOTE_MAP`, applied before splitting).
    - Per line: `" ".join(line.split())`; empty lines dropped entirely.
-   - **English only** (`lang == "eng"`): the font makes `I`, `l` and `|` near-identical.
-     Three subs, all anchored by `(?<![^\s-])` — "preceded by whitespace, a hyphen, or
-     start of string". The hyphen is there because a leading `-` marks the second
-     speaker in a two-line cue and shouldn't detach the pronoun.
+   - **English only** (`lang == "eng"`): the font makes `I`, `l`, `|` and a dotless
+     `i` near-identical. Four subs, all anchored by `(?<![^\s-])` — "preceded by
+     whitespace, a hyphen, or start of string". The hyphen is there because a leading
+     `-` marks the second speaker in a two-line cue and shouldn't detach the word.
+     - Three run one way (`:315-317`): a bare `|` or `l` is the pronoun "I", as is
+       either one carrying a contraction (`l'm`) or opening `If`.
+     - One runs the other way (`:321`): a lowercase `i` that has lost its dot comes
+       back as `t` or `l`, and neither `ts` nor `ls` is a word standing alone. The
+       trailing `(?!')` leaves a token carrying a contraction alone, since `is'` is
+       not English either and the shape is then probably something else entirely.
      Verified: `l am` → `I am`, `l'm` → `I'm`, `lf you` → `If you`, `- l said` →
-     `- I said`, `| know` → `I know`; `la casa` and `call l up`'s neighbours untouched.
+     `- I said`, `| know` → `I know`, `This ts not a person` → `… is …`,
+     `- It ls nothing` → `- It is nothing`; `la casa`, `tsunami`, `the lst of many`,
+     `he sits`, `Ts and Ls` and `call l up`'s neighbours untouched.
      Skipped for `por`, where those shapes are real words.
+   - **How thin the evidence has to be before a rule is worth adding.** The `ts`/`ls`
+     sub was measured before it was written: it fires **3 times in ~1,240 cues** of
+     raw OCR across the six English films, and all three are right. That is the bar —
+     the other candidates found in the same sweep (`/ast` → `last`, mid-sentence
+     `In` → `in`, bare `1` → `I`) were each correct too, and were all rejected for
+     resting on one or two observations. See the corrections analysis below.
 
 ### Step 4 — corrections sidecar
 
@@ -154,9 +168,33 @@ silently drop a cue.
   Step 4 is a command-line feature, and the five films with a sidecar come out
   visibly rougher in the browser.
 
+### Why the sidecars cannot be automated
+
+All 125 word-level changes across the five sidecars were classified once, and the
+answer is worth keeping so nobody re-derives it — or reaches for a language model
+to do it.
+
+- **About half restore glyphs that were never rendered.** The source bitmap for
+  one *De Sol a Sol* cue literally reads `dust has been takin  hold of it.`, with
+  a gap where the `g` should be. It is not our pipeline: that image is a single
+  contiguous ink band and `despeckle` drops nothing from it. The characters the
+  corrections put back follow ordinary letter frequency (`a` 16%, `e` 11%, `o` 7%),
+  so it is general dropout in the rips, not some letter class a rule could target —
+  descenders are only 9% of them.
+- **About a quarter are word-level reconstruction** needing meaning, not sight:
+  `'fallonto ofa_ Ile'` → `'fall on top of a pile'`. That is the LLM step this
+  project does not have.
+- **Ten per cent are speaker labels** whose insides are destroyed the same way:
+  `'[D- - ra]'` → `'[Dandara]'`. A per-film vocabulary would fix them, which is
+  exactly what a sidecar already is.
+- **Genuine character confusions are scarce and scattered.** The most frequent
+  single-character substitution in the whole corpus appears three times — and all
+  three are inside one cue. Only the `ts`/`ls` family recurred across films, which
+  is why it is the only one that became a rule.
+
 ### Step 5 — warnings
 
-One check per cue (`:515-525`), on the text *after* corrections: `not text` →
+One check per cue (`:519-529`), on the text *after* corrections: `not text` →
 "OCR'd to nothing". It is **purely informational and never aborts**. The only
 fatal conditions are elsewhere: duplicate images (`:351`), no images (`:448`),
 template mismatch (`:470`).
@@ -181,7 +219,7 @@ a little bad text now passes silently**, since "OCR'd to nothing" only fires on
 an empty result. `want` and `got` are still carried on the `Cue` record, so
 reinstating a check means writing the condition, not re-deriving the data.
 
-### Step 6 — write (`render_srt`, `:537`)
+### Step 6 — write (`render_srt`, `:535`)
 
 `fill` (`:377`) with a template — keeps each block's number and timestamp, swaps the
 `[sub_duration]` placeholder for the OCR'd body. `build` (`:395`) without — emits
