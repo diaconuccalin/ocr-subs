@@ -27,6 +27,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -469,6 +470,23 @@ def ocr(path, lang="eng", film_line_h=0.0):
     return text, len(bands), dropped, blobs
 
 
+def strip_speck_accent(match):
+    """A lower-case token whose de-accented form is English lost an accent to dirt.
+
+    A speck sitting above a letter is read as an acute: `doés`, `thé`, `wé`.
+    The word list is the gate and it has to be: dropping it de-accents
+    `fragmentary`'s `perpétua` too, which is a real Portuguese accent.
+    """
+    token = match.group(0)
+    if not token.islower() or token.isascii():
+        return token
+    plain = "".join(
+        c for c in unicodedata.normalize("NFD", token)
+        if unicodedata.category(c) != "Mn"
+    )
+    return plain if plain != token and plain in english_words() else token
+
+
 def clean(raw, lang="eng"):
     """Normalize whitespace and fix the few glyph confusions worth fixing."""
     lines = []
@@ -544,6 +562,15 @@ def clean(raw, lang="eng"):
                 else m.group(1),
                 line,
             )
+            # A speck sitting above a letter is read as an accent, so a
+            # lower-case token whose plain-ASCII form is an English word is
+            # that speck rather than a foreign word. A token of one letter is
+            # excluded, because a lone accented letter is a word in Portuguese
+            # (`é`, `à`) and never one in English, and that exclusion is what
+            # keeps `fragmentary`'s bilingual text out of this. Fires on four
+            # lines in 1765: `doés`, `thé` and `wé` come out right, and one
+            # already-mangled `fragmentary` line is no worse.
+            line = re.sub(r"[^\W\d_]{2,}", strip_speck_accent, line)
         lines.append(line)
     return "\n".join(lines)
 

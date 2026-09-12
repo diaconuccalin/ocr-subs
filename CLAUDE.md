@@ -31,9 +31,11 @@ that every transformation is inspectable and deterministic.
   `.tsv` that was never written — for every image. It is currently a symlink into
   `/usr/share/tesseract-ocr/4.00/`, which is why `tessdata/` is not committed.
   `setup_tessdata` checks for this at startup and says so plainly (`:475`).
-- `words.txt` beside the script is the English word list the suspect report
-  uses, from SCOWL by way of Aspell, with its copyright notice in the header.
-  Absent is fine: the report is skipped.
+- `words.txt` beside the script is the English word list, from SCOWL by way of
+  Aspell, with its copyright notice in the header. Two things ask it: the
+  suspect report, and `clean`'s de-accent sub. Absent is not an error, but it is
+  not nothing either — the report is skipped *and* the de-accent sub stops
+  firing, so the English films come out very slightly rougher.
 - The browser gets its own copies of all of the above from `vendor/`, and needs
   none of this installed. `worker-py.js` writes `words.txt` into Pyodide's
   filesystem next to `ocr_subs.py`, which is where `LOCAL_WORDS` looks.
@@ -214,10 +216,31 @@ silently drop a cue.
        standing for God, and Ruvinho is full of that register. It costs two real
        fixes — `between His ribs`, `immortalized Him` — and they are a sidecar's
        job. Do not add them back to pick those up.
+   - **A speck sitting above a letter is read as an accent** (`strip_speck_accent`,
+     `:473`), which is the last of the marks-read-as-characters family. A
+     lower-case token whose plain-ASCII form is in `words.txt` is dirt rather
+     than a foreign word: `doés` → `does`, `thé` → `the`, `wé` → `we`. Fires
+     on **4 lines in 1765** across the eleven films — 3 right, plus one already
+     mangled `fragmentary` line (`néo` → `neo`) that is no worse either way.
+     English only, like the rest of them.
+     - **A token of a single letter is excluded, and that gate is the rule.**
+       Without it `fragmentary`'s `é` → `e` fires three times and flattens a
+       real Portuguese word. A lone accented letter is a word in Portuguese and
+       never one in English, which is what keeps the bilingual film out.
+     - **The word list is the other gate and is equally load-bearing.** Dropping
+       it takes the sub to 9 lines and de-accents `perpétua` → `perpetua`,
+       `especulacéo`, `abstracé&o` — correct Portuguese, flattened. This is the
+       only place `clean` consults `words.txt`; see the note on it above.
+     - **It was rejected once, on a measurement that found one instance, and
+       `LINE_MERGE_RATIO` is what changed the count.** `test_extracted 34` reads
+       `the` at the merged render scale and `thé` at the corrected one, so the
+       clamp created its own customer. A rule that was below the bar can be put
+       back over it by a change somewhere else in the pipeline.
    - **How thin the evidence has to be before a rule is worth adding.** The `ts`/`ls`
      sub was measured before it was written: it fires **3 times in ~1,240 cues** of
-     raw OCR across the six English films, and all three are right. The three above
-     were measured the same way and change **6 lines in 973** — 5 right, 1 garbage
+     raw OCR across the six English films, and all three are right. The three
+     marks-read-as-characters subs were measured the same way and change
+     **6 lines in 973** — 5 right, 1 garbage
      either way, none wrong. That is the bar; candidates found in the same sweep
      (`/ast` → `last`, bare `1` → `I`) were each correct too and were rejected for
      resting on one or two observations. Mid-sentence `In` → `in` came back later
@@ -233,10 +256,23 @@ silently drop a cue.
        it. `test_extracted 84` settles it — `the-rain-does-no-know-how-to-fall.` is
        hyphenated on purpose, and the same line unhyphenated is cue 53. What
        separates a speck from a hyphen is the width of the gap it sits in, which is
-       an image-step question; `clean` cannot ask it.
-     - **De-accenting** a lower-case token whose ASCII form is English (`doés` →
-       `does`) is correct and safe — `fragmentary`'s Portuguese is untouched — and
-       fires on exactly **one cue in the corpus**. Below the bar.
+       an image-step question; `clean` cannot ask it. Nor can the word list
+       settle it: `words.txt` carries **no hyphenated entries at all**, so
+       `flip-flop` and `not-see` look exactly alike to it. Measuring the gap
+       means finding the hyphen's own connected component, which means the word
+       box `read` already parses out of the TSV — scanning a whole band for
+       flat, wide components catches every comma instead. Those 29 cues are the
+       population to label if anyone tries.
+     - **A leading apostrophe is the same mark again, and its rule was measured
+       and not taken.** `^'` before a letter fires on **7 lines in 1765** — 6
+       right and one garbage line. Four are `o_que` 69, 70, 75 and 82, where the
+       drop-shadow face sheds a fragment off the crossbar of a `T`; two are
+       `test_extracted` 46 and 72, where it is an ordinary speck. It needs an
+       exception list to be safe, because `ora_esta 47` is a real `'Cause`
+       (checked against the bitmap) — `(?i:cause|tis|til|em|bout|round|twas|neath)`
+       is the draft. That is `CAMEL_WORDS`' shape and it works; it was left out
+       because six cues are a sidecar's job and the list is one more thing to
+       keep. Adopt it if a film turns up that opens lines on a mark.
      - **A full stop *between* two letters** is right on `officer.came` and
        `had.a` and wrong on `ocupaci.nal`, `moradon.s` and `gover.o`. The three
        losses are all Portuguese, where there is no word list to gate on.
@@ -418,6 +454,21 @@ these cues are simply being read again, and tesseract moves both ways.
 - **A third render, arbitrated by confidence**, the way `close_gouges` is. It
   picks the wrong one: on cue 14 the merged render scores 84.0 against the
   corrected render's 82.3.
+
+**Propagating the clamp into `despeckle` was tried and is worse.** `despeckle`
+(`:265`) measures its own line height from the *un-clamped* bands, so on these
+50 cues `GLYPH_RATIO` and `PUNCT_GAP` are both about 2.2× too large — which is
+exactly why `test_extracted 34` keeps a speck out past the end of its first line
+and reads `again, I`. Handing it the clamped height does remove that speck, so
+the mechanism is real. It is still a loss: over the eleven films it changes
+**3 cues and none of them for the better**. `o_que 102` collapses from
+`In the-camp where people lived? tes` to `* In che wap where Pee Jived =`,
+`taxonomia` gains a stray `à`, and cue 34 trades the speck for `again,` →
+`agaln,` and `thé` → `tht`. A smaller `line_h` makes `despeckle` *more*
+permissive about what counts as a letter and *less* about how far punctuation
+may sit, and those two move in opposite directions. It also does nothing for
+`test_extracted 17`, which carries the identical stray `I`. The specks these
+cues carry are a sidecar's job.
 
 **The cost, and it is a real one:** a cue's text is no longer a function of that
 cue alone. The images are read twice — once cheaply for the median, then for
