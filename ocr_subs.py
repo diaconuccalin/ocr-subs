@@ -515,7 +515,14 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1):
             got = len(text.splitlines())
             if not text:
                 warning = "warning: {} OCR'd to nothing".format(path.name)
-            elif got != want:
+            elif got < want:
+                # Only this direction means anything. A band is a run of inked
+                # rows, and no fully blank row can fall inside one line of text,
+                # so bands never overcount: where the leading is tight enough
+                # that a descender meets the ascender below it, two real lines
+                # merge into one band and `got > want` is the band count being
+                # wrong, not the OCR. Fewer lines than bands is the anomaly —
+                # the ink plainly separates into N, and tesseract returned less.
                 warning = "warning: {} looks like {} line(s) but OCR'd to {}".format(
                     path.name, want, got
                 )

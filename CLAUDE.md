@@ -66,9 +66,9 @@ code path of its own:
 
 - `plan` (`:437`) — steps 1 and 2. Everything decided before an image is read.
 - `transcribe` (`:490`) — steps 3 to 5, a generator yielding one `Cue` (`:104`) per cue.
-- `render_srt` (`:530`) — step 6.
+- `render_srt` (`:537`) — step 6.
 
-`main` (`:536`) is a thin consumer of those three. `Abort` (`:88`) subclasses
+`main` (`:543`) is a thin consumer of those three. `Abort` (`:88`) subclasses
 `SystemExit`, so `raise Abort(...)` prints and exits 1 on the command line exactly
 as a bare `SystemExit` did, while the browser can catch it and tell a bad input
 apart from a crash. Warnings that the command line prints to stderr go through a
@@ -149,26 +149,36 @@ silently drop a cue.
   `equal`, `∅` for an empty side. `('utiful?' -> 'it beautiful?')`, `('b' -> '∅')`.
   Because `split()` ignores newlines, a correction that only changes *line breaks*
   is still applied but prints an empty diff.
-- **Report** to stderr after the loop (`:595-599`), keyed by `stamp[:12]`.
+- **Report** to stderr after the loop (`:603-607`), keyed by `stamp[:12]`.
 - **The page never does any of this** — it always passes `no_corrections=True`.
   Step 4 is a command-line feature, and the five films with a sidecar come out
   visibly rougher in the browser.
 
 ### Step 5 — warnings
 
-Two checks per cue (`:515-522`), on the text *after* corrections:
+Two checks per cue (`:515-530`), on the text *after* corrections:
 
 - `not text` → "OCR'd to nothing".
-- `got != want` → "looks like N line(s) but OCR'd to M", where `want` is the band
+- `got < want` → "looks like N line(s) but OCR'd to M", where `want` is the band
   count from step 3.2 (post-despeckle) and `got` is `len(text.splitlines())`. A
-  geometric cross-check: the image visibly holds N bands of ink, tesseract returned M.
+  geometric cross-check: the ink visibly separates into N bands, tesseract
+  returned fewer lines than that.
+
+**Only that direction is checked, and the asymmetry is the point.** A band is a
+run of inked rows, and no fully blank row can fall inside a single line of text,
+so the band count can never *overcount* lines — but it can undercount, because a
+film with tight leading, where a descender meets the ascender below it, merges
+two real lines into one band. So `got > want` is the band count being wrong
+rather than the OCR, and warning about it is pure noise: it fired 50 times across
+the eleven films, 38 of them in `o_que` alone, on cues that were transcribed
+perfectly. `got < want` is the genuine anomaly and stays.
 
 The `elif` means an empty result reports only the first. `transcribe` builds the
 string and the caller decides what to do with it; both feed one counter that is
 **purely informational and never aborts**. The only fatal conditions are elsewhere:
 duplicate images (`:351`), no images (`:448`), template mismatch (`:470`).
 
-### Step 6 — write (`render_srt`, `:530`)
+### Step 6 — write (`render_srt`, `:537`)
 
 `fill` (`:377`) with a template — keeps each block's number and timestamp, swaps the
 `[sub_duration]` placeholder for the OCR'd body. `build` (`:395`) without — emits
