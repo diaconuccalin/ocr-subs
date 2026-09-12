@@ -65,10 +65,16 @@ def do_plan(image_dir, srt_name):
     })
 
 def do_run(lang):
-    """Steps 3 to 6, reporting each cue as it lands."""
+    """Steps 3 to 6, reporting each cue as it lands.
+
+    `transcribe` reads every image once for the film's line height before the
+    first cue lands, so that pass reports too: on a long film it is a minute of
+    work with nothing to show for it, and a still bar reads as a hang.
+    """
     p = _state["plan"]
     texts, warnings, done = {}, 0, 0
-    for cue in ocr_subs.transcribe(p.stamps, p.by_timestamp, p.corrections, lang):
+    for cue in ocr_subs.transcribe(p.stamps, p.by_timestamp, p.corrections, lang,
+                                   progress=js_measure):
         texts[cue.stamp] = cue.text
         if cue.warning:
             js_warn(cue.warning)
@@ -113,6 +119,8 @@ async function init(sab) {
   py.globals.set("js_tesseract", tesseract);
   py.globals.set("js_warn", (line) => self.postMessage({ type: "warning", line }));
   py.globals.set("js_progress", (done) => self.postMessage({ type: "cue", done }));
+  py.globals.set("js_measure", (done, total) =>
+    self.postMessage({ type: "measure", done, total }));
   py.runPython(DRIVER);
   self.postMessage({ type: "ready" });
 }

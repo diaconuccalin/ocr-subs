@@ -68,15 +68,20 @@ line `00:04:29,960 --> 00:04:33,719`.
 Three functions are the seam both front ends drive, so that the browser has no
 code path of its own:
 
-- `plan` (`:484`) — steps 1 and 2. Everything decided before an image is read.
-- `transcribe` (`:537`) — steps 3 to 5, a generator yielding one `Cue` (`:117`) per cue.
-- `render_srt` (`:535`) — step 6.
+- `plan` (`:723`) — steps 1 and 2. Everything decided before an image is read.
+- `transcribe` (`:776`) — steps 3 to 5, a generator yielding one `Cue` (`:181`) per cue.
+- `render_srt` (`:833`) — step 6.
 
-`main` (`:541`) is a thin consumer of those three. `Abort` (`:101`) subclasses
+`main` (`:839`) is a thin consumer of those three. `Abort` (`:165`) subclasses
 `SystemExit`, so `raise Abort(...)` prints and exits 1 on the command line exactly
 as a bare `SystemExit` did, while the browser can catch it and tell a bad input
 apart from a crash. Warnings that the command line prints to stderr go through a
-`report` callback (`to_stderr`, `:111`) so the page can show them instead.
+`report` callback (`to_stderr`, `:175`) so the page can show them instead.
+
+`transcribe` reads every image twice: a cheap pass for `film_line_height` before
+the first cue, then the OCR. That is the one place where a cue's text depends on
+the rest of the folder rather than on itself — see the merged-band section. Its
+optional `progress(done, total)` reports that first pass; only the page uses it.
 
 **When changing any of this, the test that matters is that the command line's
 stdout, stderr and exit code stay byte-identical across all eleven film dirs.**
@@ -98,51 +103,68 @@ silently drop a cue.
 - **Without one**: cue list is the filenames sorted chronologically (`sort_key`,
   `:451`), numbered 1..N by `build`.
 
-### Step 3 — OCR each image (`ocr`, `:321`)
+### Step 3 — OCR each image (`ocr`, `:431`)
 
-1. **`load_ink`** (`:171`) — grayscale, threshold at `INK_THRESHOLD` → boolean ink mask.
-2. **`row_bands`** (`:177`) — runs of inked rows = rendered text lines. Bands under
+1. **`load_ink`** (`:203`) — grayscale, threshold at `INK_THRESHOLD` → boolean ink mask.
+2. **`row_bands`** (`:209`) — runs of inked rows = rendered text lines. Bands under
    `MIN_BAND_RATIO` of the tallest are speckle. The band count is the *expected*
    line count, used by step 5.
-3. **`despeckle`** (`:195`) — removes JPEG dirt that tesseract reads as a stray word.
+3. **`despeckle`** (`:255`) — removes JPEG dirt that tesseract reads as a stray word.
    Per line: label connected components, treat those ≥ `GLYPH_RATIO` of line height
    as letters, take their x-span, then *iteratively* grow that span over nearby
    small components (within `PUNCT_GAP` line heights) so punctuation survives — the
    loop repeats because each dot of `...` only reaches its neighbour. Blank the rest.
-4. **`deblob`** (`:212`) — removes solid blots lying *on* the words, which
+4. **`deblob`** (`:304`) — removes solid blots lying *on* the words, which
    `despeckle` keeps because they are neither small nor far from the text. A
    mark fatter than `BLOB_STROKES` times the frame's median ink thickness is
    dropped whole. **This one trades losses for wins** — see its own section
    below before touching it.
-5. **`render`** (`:241`) — mask back to PNG, downscaled so a line is ~`TARGET_LINE_PX`
+5. **`line_h`** (`:451`) — the median band height, which every constant here is
+   measured against. A band taller than `LINE_MERGE_RATIO` times the film's own
+   line height is not one line, so that frame falls back to the film's
+   measurement (`film_line_height`, `:227`). See its own section below.
+6. **`render`** (`:351`) — mask back to PNG, downscaled so a line is ~`TARGET_LINE_PX`
    tall. Sources are 8–11k px wide, far past what tesseract reads well; measuring on
    the *ink* rather than the image makes this resolution-independent.
-6. **The two-render trick** — some films use a drop-shadow display face that knocks
+7. **The two-render trick** — some films use a drop-shadow display face that knocks
    white gouges out of its own strokes, shredding letters after thresholding.
-   `close_gouges` (`:256`) morphologically closes the mask to seal them (iterated 3×3
+   `close_gouges` (`:366`) morphologically closes the mask to seal them (iterated 3×3
    instead of a big disk: same result, ~30× faster). But closing also thickens
    ordinary strokes enough to turn `0` into `8`, so **both** renders are OCR'd and the
-   higher mean word-confidence wins, ties to plain (`:341`).
-7. **`read`** (`:295`) — parses **TSV**, not plain text, for two reasons: per-word
+   higher mean word-confidence wins, ties to plain (`:459`).
+8. **`read`** (`:405`) — parses **TSV**, not plain text, for two reasons: per-word
    confidences (needed for the choice above) and block/paragraph/line columns, so
    two-line cues come back as two lines.
    - Where that TSV comes from is the module's one pluggable point: `TESSERACT`
-     (`:292`) defaults to `run_tesseract` (`:269`), which runs
+     (`:402`) defaults to `run_tesseract` (`:379`), which runs
      `tesseract - <base> -l <lang> --psm 6 tsv` as a subprocess. `--psm 6` (uniform
      block) is the mode that preserves line breaks. WebAssembly has no subprocesses,
      so `worker-py.js` rebinds `TESSERACT` to a call into tesseract.js; nothing else
      in the pipeline can tell.
-8. **`clean`** (`:346`) — runs inside `read`, i.e. on *both* renders, but confidence is
+9. **`clean`** (`:463`) — runs inside `read`, i.e. on *both* renders, but confidence is
    computed on tesseract's raw words, so cleaning never influences which render wins.
    - Folds the four curly quotes to straight (`QUOTE_MAP`, applied before splitting).
    - Per line: `" ".join(line.split())`; empty lines dropped entirely.
+   - **A full stop with a space in front of it is dirt** (`:479`), and this one is
+     every language, because it is typography rather than English: punctuation
+     attaches to the word before it, so a `.` that follows a space is a speck
+     sitting in a word gap — the same dirt as the `_` below, read as a different
+     mark. Fires on **6 cues in 1336**: `I .chose`, `[som de .1ixo`,
+     `recebendo .ua` and the scratch-dot in `test_extracted 14` come out right,
+     one is a garbage cue either way, and one (`taxonomia 112`) loses the real
+     full stop off the end of an already-garbled line. Nothing that was right
+     becomes wrong, and it fires on none of the 91 hand-written sidecar texts.
+     - **A dot at the *start* of a line is left alone**, deliberately. There it is
+       a degraded ellipsis, not dirt: `on_the_sea` opens three cues on a real `..`,
+       and the one lone leading dot in the corpus has a sidecar reading
+       `...if I agree with you`.
    - **English only** (`lang == "eng"`): the font makes `I`, `l`, `|` and a dotless
      `i` near-identical. Four of the subs are anchored by `(?<![^\s-])` — "preceded by
      whitespace, a hyphen, or start of string". The hyphen is there because a leading
      `-` marks the second speaker in a two-line cue and shouldn't detach the word.
-     - Three run one way (`:358-360`): a bare `|` or `l` is the pronoun "I", as is
+     - Three run one way (`:485-487`): a bare `|` or `l` is the pronoun "I", as is
        either one carrying a contraction (`l'm`) or opening `If`.
-     - One runs the other way (`:364`): a lowercase `i` that has lost its dot comes
+     - One runs the other way (`:491`): a lowercase `i` that has lost its dot comes
        back as `t` or `l`, and neither `ts` nor `ls` is a word standing alone. The
        trailing `(?!')` leaves a token carrying a contraction alone, since `is'` is
        not English either and the shape is then probably something else entirely.
@@ -170,14 +192,54 @@ silently drop a cue.
      letter it is, so neither of its apostrophes is touched. So
      `about'tWenty` and `Scope'screen` lose theirs while `don't`, `cinema's`,
      `y'all` and `ma'am` keep theirs.
+   - **A capital in the middle of a sentence** is the same mark again, fused to the
+     first letter of a word instead of a later one. The word before must end in a
+     letter or a comma, which leaves alone anything opening a sentence, a
+     `[speaker]` label, a quotation, or the `-` of a second speaker; and the word
+     must be on `MID_SENTENCE_WORDS`. Fires on **9 cues in 1336** — 8 right, one
+     on a cue that is garbage either way, none wrong: `mill, It was`,
+     `Even If you`, `tangled In the barb wire` ×3 (confirmed by Vida Dentro's
+     sidecar), `Oh, It's a balloon`, `No, It's fine here`, `I think It's him`,
+     `the-camp Where people lived`, `This Is my …`.
+     - **`MID_SENTENCE_WORDS` is an inclusion list, and that is the whole rule.**
+       Testing instead whether the lower-case form is in `words.txt` was measured:
+       it changes **79 cues and only 8 of them are errors**, because what a
+       dictionary keeps is mostly proper nouns that are also ordinary words —
+       `Heaven`, `Vale`, `God`, `Day`, `Lady`, `Christmas`, `Chile`, `Uruguay`,
+       `Panama`, `Canon`, `Scope`, `Napoleon`, `French`. This is the `In` → `in`
+       candidate from the sweep below, made safe by naming the words instead of
+       asking a word list.
+     - **`he`, `him`, `his`, `she` and `her` are deliberately off the list**, with
+       the archaic second person. A capital there is how English writes a pronoun
+       standing for God, and Ruvinho is full of that register. It costs two real
+       fixes — `between His ribs`, `immortalized Him` — and they are a sidecar's
+       job. Do not add them back to pick those up.
    - **How thin the evidence has to be before a rule is worth adding.** The `ts`/`ls`
      sub was measured before it was written: it fires **3 times in ~1,240 cues** of
      raw OCR across the six English films, and all three are right. The three above
      were measured the same way and change **6 lines in 973** — 5 right, 1 garbage
      either way, none wrong. That is the bar; candidates found in the same sweep
-     (`/ast` → `last`, mid-sentence `In` → `in`, bare `1` → `I`) were each correct
-     too and were rejected for resting on one or two observations. See the
+     (`/ast` → `last`, bare `1` → `I`) were each correct too and were rejected for
+     resting on one or two observations. Mid-sentence `In` → `in` came back later
+     and is the capital rule above, once it stopped asking a dictionary. See the
      corrections analysis below.
+   - **Three more that were measured and are not here**, so nobody re-derives them:
+     - **A hyphen between two words is not removable.** The shape is real — the
+       `-` of `type-of` and `not-see` is a dash-shaped speck sitting in a word gap,
+       the same dirt as the `_`, and cue 44 of `test_extracted` carries one of each.
+       But an inter-letter hyphen appears in **29 cues** and removing it is right in
+       about 8 and wrong in about 21: `flip-flop` ×7, `space-time`, `T-shirt`,
+       `quinta-feira`, `two-three`, and `close-up` in the very cue that motivated
+       it. `test_extracted 84` settles it — `the-rain-does-no-know-how-to-fall.` is
+       hyphenated on purpose, and the same line unhyphenated is cue 53. What
+       separates a speck from a hyphen is the width of the gap it sits in, which is
+       an image-step question; `clean` cannot ask it.
+     - **De-accenting** a lower-case token whose ASCII form is English (`doés` →
+       `does`) is correct and safe — `fragmentary`'s Portuguese is untouched — and
+       fires on exactly **one cue in the corpus**. Below the bar.
+     - **A full stop *between* two letters** is right on `officer.came` and
+       `had.a` and wrong on `ocupaci.nal`, `moradon.s` and `gover.o`. The three
+       losses are all Portuguese, where there is no word list to gate on.
 
 ### `deblob`: the dirt `despeckle` does not catch
 
@@ -291,6 +353,83 @@ and it needs to answer "is this mark touching type", which is the question that
 actually decides the outcome. Until then `BLOB_STROKES` is a dial with a known
 cost, and the cues it cannot reach are a `corrections.json` job.
 
+### The merged band: two lines that `row_bands` sees as one
+
+A band is a run of inked rows, so anything that puts ink in the gap between two
+lines joins them into one band. Two things do: a mark crossing the gap — the
+diagonal scratch in `test_extracted`'s cues 14 and 17 — and leading tight enough
+that a descender meets the ascender below it, which is `o_que`'s whole second
+half. **50 cues of 1336** are in this state.
+
+When it happens, `line_h` comes out around 2.2× what a line really is, and
+because every constant here is measured against `line_h`, three things go wrong
+at once. On cue 17 of `test_extracted`:
+
+| | merged (`line_h` 438) | corrected (194) |
+|---|---|---|
+| `render` scale, `TARGET_LINE_PX / line_h` | **0.073** | 0.165 |
+| `GLYPH_RATIO * line_h`, the "this is a letter" test | 131 px → **17 of 56** components are letters | 58 px → 44 of 56 |
+| `PUNCT_GAP * line_h`, how far a mark may sit and still be punctuation | **219 px** | 97 px |
+
+So tesseract is handed 16 px a line, half of `TARGET_LINE_PX`, `despeckle` has
+stopped recognising x-height letters as letters, and its reach for punctuation
+has doubled. It costs whole words: `It has` comes back as `Ithas`.
+
+**The fix is a second opinion, not a replacement.** `film_line_height` (`:227`)
+takes the median over every band of every frame in the film, and `ocr` uses it
+only when the frame's own measurement exceeds `LINE_MERGE_RATIO` times it. The
+per-frame band stays in charge everywhere else, and it has to: a band is only as
+tall as the letters that happen to be on its line, so over the eleven films a
+true single line ranges from **0.48×** the film median (`acontece`, `euros`,
+`some.` — no ascenders, no descenders) to **1.63×** (a line of bracketed, quoted
+Portuguese). Swapping the film median in wholesale would rescale nearly every
+cue and turn `TARGET_LINE_PX` into a differently-meaning constant.
+
+**Why 1.7 and not lower.** Merged pairs run 1.67× to 2.49×, single lines top out
+at 1.63×, and four hundredths is not a margin — do not read it as room to spare.
+The two errors are not worth trading either: missing a merge leaves that cue
+exactly as it was, while a false positive shrinks a correct one.
+
+| clamp at | merges caught | fires on a cue that is not merged |
+|---|---|---|
+| 1.5× | 49/50 | 2 |
+| 1.6× | 49/50 | 1 |
+| **1.7×** | **45/50** | **0** |
+| 1.8× | 39/50 | 0 |
+
+Measured on the eleven films it fires on **44 cues, every one of which is a cue
+where OCR found more lines than there were bands**, and on none of the other
+1292. Of the 44: 29 change the SRT — **19 better, 6 worse, 4 mixed** — 6 more
+change OCR that a `taxonomia` sidecar was already overriding, and 9 come out
+identical. The wins are words (`Iwas` → `I was`, `Twas` → `I was`, `trom` →
+`from`, `immediatdy` → `immediately`, `toa hospital` → `to a hospital`,
+`didn rinteract` → `didn't interact`, `otigins` → `origins`); the losses are the
+same kind of churn `deblob` produces (`into a trench` → `into atrench`, and
+`test_extracted 14` turns `godfather.` into `godraines`). At the corrected scale
+these cues are simply being read again, and tesseract moves both ways.
+
+**Two other routes were tried and are worse.**
+
+- **Splitting the band at a valley in the row-ink profile.** The signal is
+  there — an inter-line gap dips to 3–4 % of the row peak while a single line's
+  x-height shoulder bottoms out at 7–10 % — but at the best threshold found
+  (5 % of peak, valley ≥ 4 % of the run) it changes 54 band counts, **45 toward
+  the OCR's own line count and 9 wrongly**, mostly single lines cut in two.
+- **A third render, arbitrated by confidence**, the way `close_gouges` is. It
+  picks the wrong one: on cue 14 the merged render scores 84.0 against the
+  corrected render's 82.3.
+
+**The cost, and it is a real one:** a cue's text is no longer a function of that
+cue alone. The images are read twice — once cheaply for the median, then for
+real — so running over half a film can move a cue that sits near
+`LINE_MERGE_RATIO`. The pre-pass skips `despeckle` and `deblob`, which cost
+about five times the rest and move the median not at all (389/389, 213/212,
+194/194 on taxonomia, o_que, test_extracted), so it adds a few per cent:
+0.011 s a cue on test_extracted, 0.115 s on taxonomia.
+
+`want` is still the band count, so a merged cue still reports one band. The
+`got > want` in step 5 is what identifies this population.
+
 ### Step 4 — corrections sidecar
 
 - **Load** (`load_corrections`, `:369`): `{}` if absent, so the default sidecar is
@@ -336,13 +475,16 @@ to do it.
 
 ### Step 5 — warnings
 
-Two reports per cue, both on the text *after* corrections, both **purely
-informational, never aborting**, and both naming the **cue number** rather than
+Three reports per cue, all on the text *after* corrections, all **purely
+informational, never aborting**, and all naming the **cue number** rather than
 the image, because a number is what somebody checking the result has in front of
 them. The only fatal conditions are elsewhere: duplicate images (`:398`), no
 images (`:495`), template mismatch (`:517`).
 
 - `not text` → "cue N OCR'd to nothing".
+- `got < want` → `cue 43 read 1 line(s) from 2 bands of ink`. One direction
+  only; the section below is the whole argument for that, and it is worth
+  reading before touching either half.
 - **The suspect-word report** (`suspects`, `:479`): a lower-case word of four
   letters or more that is not in `words.txt` but sits exactly one letter from a
   word that is → `cue 35 reads "clearty", perhaps "clearly"`. Lower-case only,
@@ -365,9 +507,9 @@ As a *report* none of that bites: a wrong guess costs a line somebody skims.
 **Expect noise on a bilingual film** — `fragmentary` produces 18 of the 24 flags
 across the eleven films, most of them Portuguese flagged for not being English.
 
-**There used to be a second check** comparing the band count from step 3.2
-(`want`) with `len(text.splitlines())` (`got`), and it is worth knowing why it
-is gone, because the idea is tempting enough to be reinvented.
+**The line-count check runs one way, and the reasoning matters** because both
+halves are tempting and only one of them is sound. It compares the band count
+from step 3.2 (`want`) with `len(text.splitlines())` (`got`).
 
 A band is a run of inked rows, and no fully blank row can fall inside a single
 line of text — so the band count can never *overcount* lines, only undercount
@@ -377,13 +519,28 @@ the ascender below it and two real lines merge into one band. That made
 the eleven films were this direction, 38 in `o_que` alone, all on cues that were
 transcribed perfectly.
 
-The other direction, `got < want`, was sound — `onde` has a cue with two clear
-bands of ink that OCR'd to the two characters `AR`, and only this caught it. It
-was dropped anyway, on the grounds that two true positives in eleven films did
-not pay for the noise they arrived with. **The cost is real: a cue that returns
-a little bad text now passes silently**, since "OCR'd to nothing" only fires on
-an empty result. `want` and `got` are still carried on the `Cue` record, so
-reinstating a check means writing the condition, not re-deriving the data.
+**Those 44 were not noise, though, and it took until `LINE_MERGE_RATIO` to see
+it.** `got > want` cannot be a statement about OCR quality, but given the
+argument above it is an exact detector of something else: two lines sharing one
+band, which silently halves that cue's render. It is the population the
+line-height check is aimed at, and the reason it reads as harmless is only that
+16 px a line is usually still legible. `got > want` stays the way to find these
+cues; it just cannot *fix* them, because it is known only after the render it
+would have corrected.
+
+The other direction, `got < want`, is the one that is reported: a band of ink
+came back with no line of text in it. It was dropped along with the rest when
+both directions warned together, on the grounds that a couple of true positives
+did not pay for the noise they arrived with — and it is back on its own now that
+the noise is not attached to it. Measured over the eleven films it fires on
+**2 cues of 1336, and both are real**: `test_extracted 43`, whose first line is
+combed with dirt and reads as nothing, and `dizemos 199`, whose second line is
+set in outline type. No false positives.
+
+It is still not a *quality* check. "OCR'd to nothing" only fires on an empty
+result, and this only on a line lost entirely, so **a cue that returns a little
+bad text still passes silently** — that is what the suspect report and reading
+the output are for.
 
 ### Step 6 — write (`render_srt`, `:578`)
 
@@ -395,12 +552,15 @@ picky. `--dry-run` prints each transcription plus a speck count and returns earl
 
 ## `--jobs`
 
-`transcribe(..., workers=N)` maps `ocr` over a `ThreadPoolExecutor` (`:553`). Safe:
-`ocr` is a pure function of `(path, lang)` with its own `TemporaryDirectory`, and no
-module state is mutated after startup. `Executor.map` yields in *input* order, so
-corrections and warnings still come out in strict cue order — **`--jobs 4` must
-produce byte-identical output to `--jobs 1`, which is how to test it**. It also sets
-`OMP_THREAD_LIMIT=1` (`:551`), because tesseract 4.x uses OpenMP internally and
+`transcribe(..., workers=N)` maps `ocr` over a `ThreadPoolExecutor` (`:798`). Safe:
+`ocr` is a pure function of `(path, lang, film_line_h)` with its own
+`TemporaryDirectory`, and no module state is mutated after startup. The same pool
+runs the `film_line_height` pre-pass first; a median over every band is
+order-independent, so that is deterministic too. `Executor.map` yields in *input*
+order, so corrections and warnings still come out in strict cue order —
+**`--jobs 4` must produce byte-identical output to `--jobs 1`, which is how to
+test it**. It also sets
+`OMP_THREAD_LIMIT=1` (`:797`), because tesseract 4.x uses OpenMP internally and
 several multithreaded copies fight over the same cores. Measured on taxonomia:
 ~2.3 min at `--jobs 1`, ~45 s at `--jobs 4`. The browser does not use this.
 
@@ -434,6 +594,14 @@ Gotchas found the hard way:
   Names from the browser are reduced to a basename before use.
 - `showSaveFilePicker` must be the **first** statement in the click handler, before
   any `await`, or the click no longer counts as the gesture that permits a dialog.
+- **The run has two passes and the bar shows both.** `film_line_height` reads
+  every image before the first cue lands, so `transcribe` takes a `progress`
+  callback; `do_run` passes `js_measure`, which posts a `measure` message, and
+  the page shows "Measuring the type… n of N". The bar therefore fills once and
+  restarts, which is honest — it is two passes. `clock.start` runs again when
+  that pass ends, so the ETA is measured on the OCR alone and the first cue does
+  not look like it took a minute. The command line passes no callback and prints
+  nothing, so its stdout is unchanged.
 
 ### Verified
 
@@ -454,17 +622,21 @@ Gotchas found the hard way:
   most are — never pays for a component pass. Together those took it from 0.49 s
   to 0.32 s a cue with byte-identical output across all eleven films.
 
-## Tuning constants (`:48-108`)
+## Tuning constants (`:48-162`)
 
 `TARGET_LINE_PX 32`, `INK_THRESHOLD 128`, `MIN_BAND_RATIO 0.3`, `GLYPH_RATIO 0.3`,
 `PUNCT_GAP 0.5`, `SHADOW_CLOSE_FRAC 0.06`. All are expressed relative to the measured
 line height so they hold across films shot at different resolutions — keep it that way.
 
+The other two are not dials of the same kind. `BLOB_STROKES 4.4` and
+`LINE_MERGE_RATIO 1.7` each sit on a measured boundary with its own section
+above, and each has a known cost; read the section before changing either.
+
 ## Known gotchas
 
-- **`:359` is dead code.** `(?<![^\s-])[|l](?=')` never fires: the preceding sub's
+- **`:486` is dead code.** `(?<![^\s-])[|l](?=')` never fires: the preceding sub's
   lookahead `(?![^\s'])` already admits a following apostrophe, so `l'm` is `I'm`
-  before line 359 runs. Harmless, just redundant.
+  before that line runs. Harmless, just redundant.
 - **A bare pronoun followed by punctuation is not corrected** — `l.` stays `l.`,
   because `.` fails that same lookahead. Same for `l,` and `l?`. Consistent with the
   module's stated stance ("deliberately tiny"), but a real gap if a cue ends on `I`.

@@ -83,6 +83,31 @@ CAMEL_WORDS = frozenset(
     ["ebay", "ebook", "imac", "ios", "ipad", "iphone", "ipod", "itunes"]
 )
 
+# Words that may lose their capital when one turns up in the middle of a
+# sentence, where a mark fused to the first letter is the likeliest
+# explanation: `mill, It was`, `Even If you`, `tangled In the barb wire`.
+#
+# An inclusion list rather than a dictionary, and for the usual reason. Testing
+# instead whether the lower-case form is in `words.txt` was measured: it
+# changes 79 cues across the six English films and only 8 of them are errors,
+# because the rest are proper nouns that are also ordinary words — `Heaven`,
+# `Vale`, `God`, `Day`, `Lady`, `Chile`, `Panama`, `Canon`, `Scope`,
+# `Napoleon`, `French`. Kept to function words, it changes 9 cues of 1336: 8 of
+# them right, one on a cue that is garbage either way, none wrong.
+#
+# `he`, `him`, `his`, `she` and `her` are deliberately absent, along with the
+# archaic second person: a capital on those is how English writes a pronoun
+# standing for God, and Ruvinho is full of that register. It costs two real
+# fixes (`between His ribs`, `immortalized Him`) and they are a sidecar's job.
+MID_SENTENCE_WORDS = frozenset("""
+    a an the this that these those there then and but or nor so as if when
+    where what who how why while because although though than
+    of to for with without from by at in into on onto up out over under about
+    it its they them we you my your our their
+    is are was were be been being am do does did have has had
+    not no yes very just only also still even more most much many some any
+""".split())
+
 # Some films set part of their cues in a drop-shadow display face: the glyph is
 # drawn over an offset copy of itself, and where the two meet the render knocks
 # a white gouge out of the stroke. Thresholding leaves those letters shredded
@@ -105,6 +130,23 @@ SHADOW_CLOSE_FRAC = 0.06
 # The losses are real and they are the quiet kind — `48ºC` read as `458ºC` —
 # so read the output rather than trusting it.
 BLOB_STROKES = 4.4
+
+# A band is a run of inked rows, so a mark crossing the gap between two lines
+# joins them into one: `row_bands` returns a single band twice the height of a
+# line, and every constant here is measured against that height. The render is
+# then downscaled to half the size tesseract reads best, and `despeckle` stops
+# recognising x-height letters as letters. It costs real words — `It has` comes
+# back as `Ithas` — on 50 cues of 1336.
+#
+# A band this many times taller than the film's typical line cannot be one line
+# of type, so `ocr` falls back to the film's own measurement. Set high on
+# purpose: missing a merge leaves that cue exactly as it was, while a false
+# positive shrinks a correct one, so the two errors are not worth trading. At
+# 1.7x this catches 45 of the 50 and changes none of the other 1286. The
+# highest ratio a single line of type reaches over the eleven films is 1.63,
+# a line of bracketed, quoted text in taxonomia; the lowest a merged pair
+# reaches is 1.67, so do not read the gap between them as room to spare.
+LINE_MERGE_RATIO = 1.7
 
 # Language data tesseract did not ship with lives beside this script, since
 # installing it system-wide needs root. Anything already in the environment
@@ -180,6 +222,43 @@ def row_bands(ink):
         return []
     tallest = max(b - a for a, b in runs)
     return [(a, b) for a, b in runs if b - a >= MIN_BAND_RATIO * tallest]
+
+
+def film_line_height(paths, mapper=map, progress=None):
+    """How tall one line of type is across a whole film.
+
+    The median over every band of every frame. Bands are what a film renders
+    consistently and a frame does not: a line's band is only as tall as the
+    letters that happen to be on it, so a line of `acontece` measures 0.68 of
+    the film's median and one carrying brackets and quotes 1.63. That spread is
+    why this is a second opinion for `ocr` rather than a replacement for its
+    own measurement — every constant here is calibrated against the per-frame
+    band, and swapping this in would rescale every cue.
+
+    Deliberately skips `despeckle` and `deblob`, which cost around five times
+    what the rest of this does and move the median not at all: 389/389, 213/212
+    and 194/194 on taxonomia, o_que and test_extracted.
+
+    `progress(done, total)` is called once a frame, for a front end that has a
+    bar to move. The command line passes nothing and prints nothing, so its
+    stdout is unchanged; the page passes one because this pass runs before the
+    first cue and would otherwise look like a hang.
+    """
+    heights = []
+    for done, bands in enumerate(mapper(frame_bands, paths), 1):
+        heights += [b - a for a, b in bands]
+        if progress is not None:
+            progress(done, len(paths))
+    return float(np.median(heights)) if heights else 0.0
+
+
+def frame_bands(path):
+    """One frame's bands, so the pool hands back band lists rather than masks.
+
+    Mapping `load_ink` itself would queue every task at once and keep an ink
+    mask alive for each; these frames are 8-11k px wide and that is gigabytes.
+    """
+    return row_bands(load_ink(path))
 
 
 def despeckle(ink, bands):
@@ -358,12 +437,17 @@ def read(png, lang, workdir):
     return clean("\n".join(lines), lang), mean
 
 
-def ocr(path, lang="eng"):
+def ocr(path, lang="eng", film_line_h=0.0):
     """Transcribe one frame, reading it both plain and de-gouged.
 
     Neither render wins everywhere — closing rescues the drop-shadow face and
     corrupts ordinary digits — so both are read and tesseract's confidence
     picks. Ties go to the plain render, which is right far more often.
+
+    `film_line_h` is how tall a line of type is in this film, from
+    `film_line_height`, and is only consulted to catch a band that holds two
+    lines joined by a mark. Zero, the default, leaves each frame to speak for
+    itself. Everything else here stays a function of this frame alone.
     """
     ink = load_ink(path)
     bands = row_bands(ink)
@@ -373,6 +457,8 @@ def ocr(path, lang="eng"):
     ink, blobs = deblob(ink)
     bands = row_bands(ink) or bands
     line_h = float(np.median([b - a for a, b in bands]))
+    if film_line_h and line_h > LINE_MERGE_RATIO * film_line_h:
+        line_h = film_line_h
 
     with tempfile.TemporaryDirectory() as workdir:
         plain, plain_conf = read(render(ink, line_h), lang, workdir)
@@ -390,6 +476,16 @@ def clean(raw, lang="eng"):
         line = " ".join(line.split())
         if not line:
             continue
+        # A full stop cannot follow a space: punctuation attaches to the word
+        # in front of it. One that does is a speck sitting in the gap between
+        # two words, which is the same dirt the `_` rule below catches, read as
+        # a different mark. Every language: this is typography, not English.
+        #
+        # A dot at the *start* of a line is left alone, because there it is a
+        # degraded ellipsis rather than dirt — `on_the_sea` opens three cues on
+        # a real `..`, and the one lone leading dot in the corpus has a sidecar
+        # reading `...if I agree with you`.
+        line = " ".join(re.sub(r"(?<=\s)\.(?!\.)", "", line).split())
         # A bare `|` or `l` is the pronoun "I", as is either one carrying a
         # contraction (`l'm`, `l've`) or opening `If`. A leading `-` marks the
         # second speaker in a two-line cue, so it doesn't break the word.
@@ -434,6 +530,19 @@ def clean(raw, lang="eng"):
                 r"(?<=[A-Za-z])(?<!'[A-Za-z])'(?=[a-z])(?![A-Za-z]')"
                 r"(?!" + APOSTROPHE_TAILS + r"(?![A-Za-z]))",
                 " ", line,
+            )
+            # A mark fused to a lower-case letter can make a capital of it, the
+            # same way one inside a word does. Only in the middle of a
+            # sentence, and only for the words on the list: the word before
+            # must end in a letter or a comma, which leaves alone anything
+            # opening a sentence, a `[speaker]` label, a quotation or the `-`
+            # that marks the second speaker.
+            line = re.sub(
+                r"(?:(?<=[A-Za-z]\s)|(?<=[A-Za-z],\s))([A-Z][a-z]+)\b",
+                lambda m: m.group(1).lower()
+                if m.group(1).lower() in MID_SENTENCE_WORDS
+                else m.group(1),
+                line,
             )
         lines.append(line)
     return "\n".join(lines)
@@ -673,13 +782,22 @@ def plan(image_dir, srt=None, corrections_name="corrections.json",
     return Plan(by_timestamp, stamps, template, newline, default_out, corrections)
 
 
-def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1):
+def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1,
+               progress=None):
     """Steps 3 to 5 for every cue, yielding one Cue each, in cue order.
 
     `workers` only changes how many images are in flight: `ocr` is a pure
     function of its arguments and builds its own temporary directory, and
     Executor.map yields in *input* order, so the corrections and the warnings
     still come out in strict cue order and the output is unchanged.
+
+    The images are read twice: once cheaply, for the film's line height, and
+    then for real. That first pass is what makes a cue's text depend on the
+    other images in the folder rather than on itself alone — run this over half
+    a film and a cue on the edge of `LINE_MERGE_RATIO` can come out
+    differently. It costs a few per cent of the run: 0.011s a cue on
+    test_extracted, 0.115s on taxonomia, against 0.4-0.8s for the OCR itself.
+    `progress` is handed to it so a front end can show that pass moving.
     """
     paths = [by_timestamp[s] for s in stamps]
     pool = None
@@ -689,9 +807,13 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1):
             # it would fight over the same cores for a net loss.
             os.environ.setdefault("OMP_THREAD_LIMIT", "1")
             pool = concurrent.futures.ThreadPoolExecutor(workers)
-            results = pool.map(ocr, paths, itertools.repeat(lang))
+            film_line_h = film_line_height(paths, pool.map, progress)
+            results = pool.map(
+                ocr, paths, itertools.repeat(lang), itertools.repeat(film_line_h)
+            )
         else:
-            results = (ocr(path, lang) for path in paths)
+            film_line_h = film_line_height(paths, progress=progress)
+            results = (ocr(path, lang, film_line_h) for path in paths)
 
         for number, (stamp, path, (text, want, dropped, blobs)) in enumerate(
             zip(stamps, paths, results), 1
@@ -701,17 +823,25 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1):
                 changes = word_diff(text, corrections[stamp])
                 text = corrections[stamp]
             got = len(text.splitlines())
-            # There is deliberately no line-count cross-check. Comparing the
-            # band count with the number of lines returned cried wolf far too
-            # often to be worth it: a band is a run of inked rows, so tight
-            # leading merges two real lines into one band and the common
-            # direction was always the geometry being wrong rather than the
-            # OCR. The rarer direction did catch real failures, but not often
-            # enough to earn the noise. `want` and `got` are still on the
-            # record for a caller that wants to look.
+            # The line-count check runs one way only. A band is a run of inked
+            # rows and no blank row can fall inside a line of text, so the band
+            # count can never overcount lines — `got > want` means two lines
+            # shared a band, which is a fact about the geometry rather than
+            # about the transcription, and warning on it cried wolf 44 times in
+            # eleven films. `got < want` is the sound direction: a band of ink
+            # came back with no line of text in it. It fires on 2 cues of 1336
+            # and both are real — a line lost to dirt, and a line set in outline
+            # type that OCR'd to nothing.
             # Point at the cue's number rather than its filename: that is what
             # a person checking the result has in front of them.
-            warning = "warning: cue {} OCR'd to nothing".format(number) if not text else None
+            if not text:
+                warning = "warning: cue {} OCR'd to nothing".format(number)
+            elif got < want:
+                warning = "warning: cue {} read {} line(s) from {} bands of ink".format(
+                    number, got, want
+                )
+            else:
+                warning = None
             yield Cue(number, stamp, path, text, want, got, dropped, blobs, changes,
                       warning, suspects(text, lang))
     finally:

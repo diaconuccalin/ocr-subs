@@ -278,7 +278,8 @@ els.start.addEventListener("click", async () => {
   els.start.disabled = true;
   els.report.hidden = true;
   clock.start(state.cues);
-  phase("Reading 0 of " + state.cues, 0);
+  els.eta.textContent = "";
+  phase("Measuring the type…", 0);
   worker.postMessage({ type: "run", lang: els.lang.value });
   worker._handle = handle;
 });
@@ -336,6 +337,13 @@ async function main() {
     }
     else if (message.type === "loading") phase("Reading the folder… " + message.done);
     else if (message.type === "planned") planned(message.summary);
+    else if (message.type === "measure") {
+      // The line-height pass, before the first cue: every image is read once
+      // with nothing to show for it, so say what it is rather than sit still.
+      phase("Measuring the type… " + message.done + " of " + message.total,
+            message.done / message.total);
+      if (message.done === message.total) clock.start(state.cues);
+    }
     else if (message.type === "cue") {
       clock.tick(message.done);
       phase("Reading " + message.done + " of " + state.cues, message.done / state.cues);

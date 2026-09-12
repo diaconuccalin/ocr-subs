@@ -51,6 +51,13 @@ only ever reports. Rewriting those automatically was measured on these films and
 got it wrong more often than right. Expect a few false alarms on a film that
 mixes languages, since a Portuguese word is flagged simply for not being English.
 
+### Lines that came back empty
+
+A run also flags a cue where the image holds a band of ink that came back with
+no line of text in it — `cue 43 read 1 line(s) from 2 bands of ink`. That is
+almost always a line the rip degraded past reading, and it is worth looking at
+the image before trusting the cue. It only ever reports.
+
 ### What the page does *not* do
 
 It always runs raw OCR. The command line can additionally apply a
