@@ -149,6 +149,68 @@ silently drop a cue.
      `In` → `in`, bare `1` → `I`) were each correct too, and were all rejected for
      resting on one or two observations. See the corrections analysis below.
 
+### The dirt `despeckle` does not catch, and one failed attempt on it
+
+Some rips carry solid marks lying *across* the words — scratches and blots, not
+the scatter of specks `despeckle` was written for. They are big enough and close
+enough to the type that its size-and-distance test keeps them, and tesseract
+reads them as letters: a wedge over "mud" comes back as `Mud`, a slash beside
+`this.` becomes `this?`, `my uncle` becomes `niy$dncle`. The source bitmaps are
+perfectly legible; the text is only wrong because of what is lying on it.
+
+**A thickness threshold was tried for this and does not work.** The reasoning was
+that a face has one stroke width, so a mark far fatter than a stroke cannot be a
+glyph. For each connected mark, take the largest distance-to-background anywhere
+in it and compare with the median of that distance over all ink:
+
+| on `test_extracted` | ratio |
+|---|---|
+| thickest real glyph (a capital `M`, `N` or `W` junction) | 3.75x |
+| thinnest piece of dirt | 5.15x |
+
+A cutoff of 4.4 sits in the middle of that gap, fixed five of the fourteen cues
+flagged on that film and touched none of the other eighty. Across all eleven
+films it changed 34 cues of 1251: **16 clearly fixed, 8 clearly broken**, 5 mixed,
+5 garbage either way. The breaks are the reason it was reverted rather than the
+ratio — they turn *correct* text into plausible wrong text (`48ºC` to `458ºC`,
+`consiste` to `consis`, `Maravilha` to `Aaravilha`), which review will not catch,
+whereas the fixes turn visible garbage into words.
+
+The measurement that killed it: the median ink half-thickness the ratio is taken
+against runs **2.0 px in `dizemos` and `o_que`, 3.6 in `ora_esta`, 4.0 in
+`test_extracted`, 8.5 in `taxonomia`**, because the films are rendered at very
+different sizes. The ratios then overlap completely — the capital `M` of
+*Maravilha* scores 5.50x, *fatter* than the dirt at 5.15x that the threshold was
+built to catch — and at 2 px the ratio is quantised into steps of 0.5, so it is
+noisiest exactly where it does most damage. No cutoff separates those two
+populations, so this is not a constant that wants retuning.
+
+The first suspect was the normaliser — the median stroke is **not**
+scale-invariant, and everything else here is measured against line height for
+exactly that reason. So the obvious repair was tried too, and **it fails as
+well.** Against a set of marks known to be dirt (removing them fixed the text)
+and marks known to be glyphs (removing them broke it):
+
+| normaliser | known dirt | known glyphs |
+|---|---|---|
+| fatness / median stroke | 5.15x and up | 4.48x – 8.50x |
+| fatness / line height | 0.055 – 0.119 | 0.066 – 0.198 |
+| slenderness, `area / fattest²` | 6.6 – 10.7 | 4.2 – 48.4 |
+
+Every one of them overlaps. `ora_esta` carries a glyph that is fatter than all
+the dirt *and* stubbier than all of it; `dizemos` has a capital `M` fatter than
+the dirt the threshold was built for. Fatness and shape, alone or renormalised,
+do not separate these two populations.
+
+Combining fatness and slenderness does separate all ten of those marks — and
+that result should be distrusted, because it is two free parameters fitted to
+ten hand-picked points, which is the same mistake that produced 4.4 one level
+up. A real attempt needs a labelled set of marks drawn from every film, built
+before any threshold is chosen, and it should be assumed to fail until it is
+measured against cues nobody used to design it. Until then, these cues are a
+`corrections.json` job: the damage is obvious to a person and genuinely
+ambiguous to geometry.
+
 ### Step 4 — corrections sidecar
 
 - **Load** (`load_corrections`, `:322`): `{}` if absent, so the default sidecar is
