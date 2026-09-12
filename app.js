@@ -19,6 +19,7 @@ for (const id of ["unsupported", "input-images", "input-srt", "status-images",
 const state = {
   images: [], template: null, templateAuto: false, folder: "",
   cues: 0, suggested: "subtitles.srt", ready: false, running: false,
+  runtimeReady: false,
 };
 
 const encoder = new TextEncoder();
@@ -211,7 +212,8 @@ function revalidate() {
   if (!state.images.length) return;
   state.ready = false;
   els.start.disabled = true;
-  phase("Checking the cues…");
+  phase(state.runtimeReady ? "Checking the cues…"
+                           : "Waiting for the runtime, then checking the cues…");
   els["bar-fill"].style.width = "0%";
   worker.postMessage({
     type: "load",
@@ -328,7 +330,10 @@ async function main() {
   worker.onmessage = async (event) => {
     const message = event.data;
     if (message.type === "ocr") await serveOcr(message);
-    else if (message.type === "ready") phase("Ready.", 0), els.progress.hidden = true;
+    else if (message.type === "ready") {
+      state.runtimeReady = true;
+      if (!state.images.length) { phase("Ready.", 0); els.progress.hidden = true; }
+    }
     else if (message.type === "loading") phase("Reading the folder… " + message.done);
     else if (message.type === "planned") planned(message.summary);
     else if (message.type === "cue") {
@@ -344,7 +349,7 @@ async function main() {
       say("error", "The run stopped", message.error);
     }
   };
-  phase("Starting Python…");
+  phase("Downloading Python and the OCR engine… (about 35 MB, once)");
   worker.postMessage({ type: "init", sab });
 
   els["input-images"].addEventListener("change", (e) => acceptImages([...e.target.files]));

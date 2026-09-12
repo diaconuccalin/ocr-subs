@@ -136,24 +136,33 @@ async function load({ files, template, folder }) {
   self.postMessage({ type: "planned", summary: JSON.parse(summary) });
 }
 
-self.onmessage = async (event) => {
-  const message = event.data;
-  try {
-    if (message.type === "init") {
-      await init(message.sab);
-    } else if (message.type === "load") {
-      await load(message);
-    } else if (message.type === "run") {
-      const fn = py.globals.get("do_run");
-      const warnings = fn(message.lang);
-      fn.destroy();
-      self.postMessage({
-        type: "done",
-        srt: py.FS.readFile("/out.srt"),
-        warnings,
-      });
-    }
-  } catch (error) {
-    self.postMessage({ type: "failed", error: String((error && error.message) || error) });
+async function handle(message) {
+  if (message.type === "init") {
+    await init(message.sab);
+  } else if (message.type === "load") {
+    await load(message);
+  } else if (message.type === "run") {
+    const fn = py.globals.get("do_run");
+    const warnings = fn(message.lang);
+    fn.destroy();
+    self.postMessage({
+      type: "done",
+      srt: py.FS.readFile("/out.srt"),
+      warnings,
+    });
   }
+}
+
+// A worker's event loop starts the next message without waiting for the last
+// handler's promise, so a folder picked while the runtime was still downloading
+// used to run against a half-built interpreter — far enough along for the
+// filesystem to work, not far enough for the driver to be defined. Every
+// message waits its turn instead.
+let queue = Promise.resolve();
+
+self.onmessage = (event) => {
+  const message = event.data;
+  queue = queue.then(() => handle(message)).catch((error) => {
+    self.postMessage({ type: "failed", error: String((error && error.message) || error) });
+  });
 };
