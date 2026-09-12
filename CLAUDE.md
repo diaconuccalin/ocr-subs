@@ -152,15 +152,18 @@ silently drop a cue.
      lift out. An underscore between letters is a mark; so is a capital inside a
      lower-case word (`tWenty`), except that words beginning with a capital do this
      legitimately (`McDonald`, `YouTube`), so only lower-case-initial words are
-     touched. **Known and accepted: this lower-cases `iPhone` and `eBay`.** Telling
-     those from `tWenty` needs a word list, and a cosmetic `iphone` is a cheaper
-     mistake than leaving visible garbage.
+     touched. `CAMEL_WORDS` spares the handful that start lower-case and carry a
+     capital on purpose — `iPhone`, `eBay`, `iOS`. That is an exception list, not
+     a dictionary: anything not on it is lower-cased, so a new brand name will be
+     flattened until someone adds it.
    - **The apostrophe sub is the fussy one**, because most apostrophes are real. One
      between two letters survives only if what follows it is a contraction or a
      possessive — `APOSTROPHE_TAILS`, every entry of which was found in these films
      bar the last four. A capital after it means a name (`O'Brien`) and nothing after
      it means a plural possessive (`guys'`); requiring a lower-case letter after the
-     apostrophe leaves both alone, and `(?<!'n)` spares `rock'n'roll`. So
+     apostrophe leaves both alone, and a single letter fenced by apostrophes is
+     read as an idiom — `rock'n'roll`, `guns'n'roses`, `Toys'R'Us` — whichever
+     letter it is, so neither of its apostrophes is touched. So
      `about'tWenty` and `Scope'screen` lose theirs while `don't`, `cinema's`,
      `y'all` and `ma'am` keep theirs.
    - **How thin the evidence has to be before a rule is worth adding.** The `ts`/`ls`

@@ -76,6 +76,13 @@ QUOTE_MAP = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d"
 # prevents a change.
 APOSTROPHE_TAILS = r"(?:s|t|m|d|re|ve|ll|am|all|n|clock|em|til|cause)"
 
+# Words that carry a capital in the middle on purpose and start lower-case, so
+# the rule below cannot tell them from a mark read as a letter. Short on
+# purpose: this is a list of exceptions, not a dictionary.
+CAMEL_WORDS = frozenset(
+    ["ebay", "ebook", "imac", "ios", "ipad", "iphone", "ipod", "itunes"]
+)
+
 # Some films set part of their cues in a drop-shadow display face: the glyph is
 # drawn over an offset copy of itself, and where the two meet the render knocks
 # a white gouge out of the stroke. Thresholding leaves those letters shredded
@@ -393,8 +400,18 @@ def clean(raw, lang="eng"):
             # in words that start with a capital (`McDonald`, `YouTube`), so
             # only lower-case-initial words are touched.
             line = re.sub(r"(?<=[A-Za-z])_(?=[A-Za-z])", " ", line)
-            line = re.sub(r"\b[a-z][a-z]*[A-Z][a-z]",
-                          lambda m: m.group(0).lower(), line)
+            # Matched whole so the exception list can be consulted, but only
+            # acted on for a capital with lower-case on both sides, which is
+            # the shape a mark makes; `tO` at the end of a word is something
+            # else and is left alone.
+            line = re.sub(
+                r"\b[a-z][A-Za-z]*\b",
+                lambda m: m.group(0).lower()
+                if re.search(r"[a-z][A-Z][a-z]", m.group(0))
+                and m.group(0).lower() not in CAMEL_WORDS
+                else m.group(0),
+                line,
+            )
             # Same again for an apostrophe, which is harder because most of
             # them are real. One between two letters is kept only when what
             # follows it is a contraction or a possessive; `about'tWenty` and
@@ -402,10 +419,11 @@ def clean(raw, lang="eng"):
             # capital after the apostrophe means a name (`O'Brien`), and one
             # at the end of a word is a plural possessive (`guys'`); both are
             # left alone by requiring a lower-case letter after it. The
-            # `(?<!'n)` is for `rock'n'roll`, whose second apostrophe is
-            # otherwise followed by a perfectly ordinary-looking word.
+            # A single letter fenced by apostrophes is an idiom — `rock'n'roll`,
+            # `guns'n'roses`, `Toys'R'Us` — so neither of its apostrophes is
+            # touched, whichever letter it is.
             line = re.sub(
-                r"(?<=[A-Za-z])(?<!'n)'(?=[a-z])"
+                r"(?<=[A-Za-z])(?<!'[A-Za-z])'(?=[a-z])(?![A-Za-z]')"
                 r"(?!" + APOSTROPHE_TAILS + r"(?![A-Za-z]))",
                 " ", line,
             )
