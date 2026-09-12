@@ -43,6 +43,14 @@ dialog is Chromium-only; elsewhere the file lands in your downloads folder.
 The first visit downloads about 35 MB of runtime (Python, numpy, scipy, Pillow
 and the tesseract engine, all compiled to WebAssembly) and the browser caches it.
 
+### Words it is unsure about
+
+Every run lists the cues holding a lower-case word that is not English but sits
+one letter from a word that is — `cue 35 reads "clearty", perhaps "clearly"`. It
+only ever reports. Rewriting those automatically was measured on these films and
+got it wrong more often than right. Expect a few false alarms on a film that
+mixes languages, since a Portuguese word is flagged simply for not being English.
+
 ### What the page does *not* do
 
 It always runs raw OCR. The command line can additionally apply a
@@ -104,6 +112,7 @@ runs Jekyll and drops files whose names begin with an underscore.
 | | |
 |---|---|
 | `ocr_subs.py` | the whole pipeline, and the command line |
+| `words.txt` | English word list, for flagging suspect words (SCOWL, via Aspell) |
 | `index.html`, `app.css`, `app.js` | the page |
 | `worker-py.js` | runs `ocr_subs.py` under Pyodide, in a worker |
 | `coi-serviceworker.js` | supplies the headers `SharedArrayBuffer` needs |

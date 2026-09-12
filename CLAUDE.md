@@ -31,8 +31,12 @@ that every transformation is inspectable and deterministic.
   `.tsv` that was never written — for every image. It is currently a symlink into
   `/usr/share/tesseract-ocr/4.00/`, which is why `tessdata/` is not committed.
   `setup_tessdata` checks for this at startup and says so plainly (`:475`).
+- `words.txt` beside the script is the English word list the suspect report
+  uses, from SCOWL by way of Aspell, with its copyright notice in the header.
+  Absent is fine: the report is skipped.
 - The browser gets its own copies of all of the above from `vendor/`, and needs
-  none of this installed.
+  none of this installed. `worker-py.js` writes `words.txt` into Pyodide's
+  filesystem next to `ocr_subs.py`, which is where `LOCAL_WORDS` looks.
 
 ## Running it
 
@@ -332,10 +336,34 @@ to do it.
 
 ### Step 5 — warnings
 
-One check per cue (`:562-566`), on the text *after* corrections: `not text` →
-"OCR'd to nothing". It is **purely informational and never aborts**. The only
-fatal conditions are elsewhere: duplicate images (`:398`), no images (`:495`),
-template mismatch (`:517`).
+Two reports per cue, both on the text *after* corrections, both **purely
+informational, never aborting**, and both naming the **cue number** rather than
+the image, because a number is what somebody checking the result has in front of
+them. The only fatal conditions are elsewhere: duplicate images (`:398`), no
+images (`:495`), template mismatch (`:517`).
+
+- `not text` → "cue N OCR'd to nothing".
+- **The suspect-word report** (`suspects`, `:479`): a lower-case word of four
+  letters or more that is not in `words.txt` but sits exactly one letter from a
+  word that is → `cue 35 reads "clearty", perhaps "clearly"`. Lower-case only,
+  so no proper noun is ever queried; exactly one candidate, so nothing anybody
+  would have to guess at. English only — there is no other word list.
+
+**It reports and never rewrites, and that is a measured decision rather than
+caution.** Applying the same test as a correction was tried over the 973 lines
+of English OCR: 31 words would change, about 8 rightly and 18 wrongly. Two
+things sink it, neither of them fixed by the lower-case filter that does keep
+proper nouns safe. `fragmentary` is Portuguese poetry with English subtitles, so
+lower-case Portuguese gets "corrected" into English — `apenas` into `arenas`,
+`futuro` into `future`, `leite` into `lite`. And no word list is the language:
+`compressions` and `rarefactions` are ordinary English that this one lacks, and
+rewriting them corrupts correct text. Meanwhile the errors worth catching are
+mostly out of reach anyway — `dads` for `does` is a real word, `itis` for
+`it is` is a split rather than a substitution.
+
+As a *report* none of that bites: a wrong guess costs a line somebody skims.
+**Expect noise on a bilingual film** — `fragmentary` produces 18 of the 24 flags
+across the eleven films, most of them Portuguese flagged for not being English.
 
 **There used to be a second check** comparing the band count from step 3.2
 (`want`) with `len(text.splitlines())` (`got`), and it is worth knowing why it

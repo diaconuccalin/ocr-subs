@@ -73,6 +73,10 @@ def do_run(lang):
         if cue.warning:
             js_warn(cue.warning)
             warnings += 1
+        for word, near in cue.suspects:
+            js_warn('warning: cue %d reads "%s", perhaps "%s"'
+                    % (cue.number, word, near))
+            warnings += 1
         done += 1
         js_progress(done)
     with open("/out.srt", "wb") as f:
@@ -97,10 +101,15 @@ async function init(sab) {
   });
   await py.loadPackage(["numpy", "scipy", "Pillow"]);
 
-  // The page serves the very same file the command line runs.
-  const source = await (await fetch("./ocr_subs.py")).text();
+  // The page serves the very same file the command line runs, and the word
+  // list it looks for beside itself.
+  const [source, words] = await Promise.all([
+    fetch("./ocr_subs.py").then((r) => r.text()),
+    fetch("./words.txt").then((r) => r.text()),
+  ]);
   py.FS.mkdirTree("/code");
   py.FS.writeFile("/code/ocr_subs.py", source);
+  py.FS.writeFile("/code/words.txt", words);
   py.globals.set("js_tesseract", tesseract);
   py.globals.set("js_warn", (line) => self.postMessage({ type: "warning", line }));
   py.globals.set("js_progress", (done) => self.postMessage({ type: "cue", done }));

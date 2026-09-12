@@ -111,6 +111,14 @@ BLOB_STROKES = 4.4
 # wins, and the directory is simply absent for the films that only need `eng`.
 LOCAL_TESSDATA = Path(__file__).resolve().parent / "tessdata"
 
+# A word list, beside this script, for the suspect-word report. Absent is fine:
+# the report is simply skipped.
+LOCAL_WORDS = Path(__file__).resolve().parent / "words.txt"
+
+# Words shorter than this have too many neighbours for "one edit away" to mean
+# anything, so they are never reported.
+SUSPECT_LENGTH = 4
+
 
 class Abort(SystemExit):
     """A bad input rather than a bug.
@@ -129,7 +137,7 @@ def to_stderr(message):
 
 # One record per cue, carrying everything a caller needs to report on it.
 Cue = collections.namedtuple(
-    "Cue", "stamp path text want got dropped blobs changes warning"
+    "Cue", "number stamp path text want got dropped blobs changes warning suspects"
 )
 
 # Everything decided before a single image is read: which cues exist, in what
@@ -431,6 +439,72 @@ def clean(raw, lang="eng"):
     return "\n".join(lines)
 
 
+def english_words():
+    """The word list, read once. An empty set if it isn't there."""
+    if english_words.cache is None:
+        try:
+            text = LOCAL_WORDS.read_text(encoding="utf-8")
+        except OSError:
+            english_words.cache = frozenset()
+        else:
+            english_words.cache = frozenset(
+                w for w in text.split() if not w.startswith("#")
+            )
+    return english_words.cache
+
+
+english_words.cache = None
+
+
+def one_edit(word, words):
+    """Every word in `words` reachable from `word` by one letter."""
+    found = set()
+    for i in range(len(word) + 1):
+        head, tail = word[:i], word[i:]
+        if tail:
+            shorter = head + tail[1:]
+            if shorter in words:
+                found.add(shorter)
+        for letter in "abcdefghijklmnopqrstuvwxyz":
+            if tail:
+                swapped = head + letter + tail[1:]
+                if swapped != word and swapped in words:
+                    found.add(swapped)
+            longer = head + letter + tail
+            if longer in words:
+                found.add(longer)
+    return found
+
+
+def suspects(text, lang="eng"):
+    """Words that are not English but sit one letter from a word that is.
+
+    A report, never a correction. Rewriting these automatically was measured
+    and is a bad trade — see "Why the sidecars cannot be automated" in
+    CLAUDE.md — but as a list of places to look it costs nothing and finds
+    things a read-through misses.
+
+    Only lower-case words are considered, which keeps every proper noun out of
+    it, and only when exactly one word is a single letter away, which keeps out
+    the ones that are anybody's guess.
+    """
+    if lang != "eng":
+        return []
+    words = english_words()
+    if not words:
+        return []
+    found = []
+    for token in re.findall(r"[A-Za-z']+", text):
+        if not re.fullmatch(r"[a-z]+", token):
+            continue
+        if len(token) < SUSPECT_LENGTH or token in words:
+            continue
+        near = one_edit(token, words)
+        if len(near) == 1:
+            found.append((token, near.pop()))
+    return found
+
+
 def load_corrections(path):
     """Read the timestamp -> reconstructed-text sidecar, if present."""
     if not path.exists():
@@ -619,7 +693,9 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1):
         else:
             results = (ocr(path, lang) for path in paths)
 
-        for stamp, path, (text, want, dropped, blobs) in zip(stamps, paths, results):
+        for number, (stamp, path, (text, want, dropped, blobs)) in enumerate(
+            zip(stamps, paths, results), 1
+        ):
             changes = None
             if stamp in corrections and corrections[stamp] != text:
                 changes = word_diff(text, corrections[stamp])
@@ -633,8 +709,11 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1):
             # OCR. The rarer direction did catch real failures, but not often
             # enough to earn the noise. `want` and `got` are still on the
             # record for a caller that wants to look.
-            warning = "warning: {} OCR'd to nothing".format(path.name) if not text else None
-            yield Cue(stamp, path, text, want, got, dropped, blobs, changes, warning)
+            # Point at the cue's number rather than its filename: that is what
+            # a person checking the result has in front of them.
+            warning = "warning: cue {} OCR'd to nothing".format(number) if not text else None
+            yield Cue(number, stamp, path, text, want, got, dropped, blobs, changes,
+                      warning, suspects(text, lang))
     finally:
         if pool is not None:
             pool.shutdown(wait=False)
@@ -697,6 +776,10 @@ def main():
             applied.append((cue.stamp, cue.changes))
         if cue.warning:
             print(cue.warning, file=sys.stderr)
+            warnings += 1
+        for word, near in cue.suspects:
+            print('warning: cue {} reads "{}", perhaps "{}"'.format(
+                cue.number, word, near), file=sys.stderr)
             warnings += 1
         if args.dry_run:
             notes = []
