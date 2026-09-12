@@ -79,6 +79,19 @@ QUOTE_MAP = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d"
 # read and the more confident one wins. See `read`.
 SHADOW_CLOSE_FRAC = 0.06
 
+# Some rips carry solid blots lying on the words — a filled-in counter, a blob
+# of spatter, a scratch — big enough and close enough that `despeckle` keeps
+# them and tesseract reads them as letters: a wedge over "mud" comes back as
+# "Mud". A mark this many times fatter than the typical ink in its frame is not
+# type, and gets dropped whole.
+#
+# This one is a judgement call rather than a clean separation, and the reasoning
+# is under "The dirt `despeckle` does not catch" in CLAUDE.md. Measured over the
+# eleven films it changes 34 cues of 1251: 16 come out better, 7 worse, 1 mixed.
+# The losses are real and they are the quiet kind — `48ºC` read as `458ºC` —
+# so read the output rather than trusting it.
+BLOB_STROKES = 4.4
+
 # Language data tesseract did not ship with lives beside this script, since
 # installing it system-wide needs root. Anything already in the environment
 # wins, and the directory is simply absent for the films that only need `eng`.
@@ -102,7 +115,7 @@ def to_stderr(message):
 
 # One record per cue, carrying everything a caller needs to report on it.
 Cue = collections.namedtuple(
-    "Cue", "stamp path text want got dropped changes warning"
+    "Cue", "stamp path text want got dropped blobs changes warning"
 )
 
 # Everything decided before a single image is read: which cues exist, in what
@@ -196,6 +209,53 @@ def despeckle(ink, bands):
     return out, dropped
 
 
+def deblob(ink):
+    """Drop whole marks that are too fat to be type.
+
+    The mirror of `despeckle`, which throws out dirt that is small and sits
+    away from the words: this throws out dirt that is large and sits on them.
+    A mark goes whole rather than trimmed, because the thin end of a scratch is
+    indistinguishable from a stroke.
+
+    The limit of the idea, worth knowing before tuning it: a blot that merely
+    rests inside the bowl of an `o` is its own component and lifts out cleanly,
+    while one that touches the stroke is the same component as the letter and
+    takes the letter with it. Fatness cannot tell those apart, because a
+    filled-in `o` and a blot of ink are the same object.
+    """
+    if not ink.any():
+        return ink, 0
+    # Work on the ink's bounding box. These frames are mostly empty margin and
+    # the distance transform is the expensive step, so this is ~5x quicker for
+    # the same answer: a mark's nearest background is a stroke-width away, far
+    # inside the crop.
+    rows = np.nonzero(ink.any(axis=1))[0]
+    cols = np.nonzero(ink.any(axis=0))[0]
+    box = (slice(max(0, rows[0] - 2), rows[-1] + 3),
+           slice(max(0, cols[0] - 2), cols[-1] + 3))
+    patch = ink[box]
+    dist = ndimage.distance_transform_edt(patch)
+    stroke = float(np.median(dist[patch]))
+    if stroke <= 0:
+        return ink, 0
+    # Only whether a mark exceeds the limit matters, never by how much, so
+    # threshold first and ask which marks the survivors belong to. That is far
+    # cheaper than a maximum per component, and on a clean frame — which most
+    # frames are — nothing survives and there is nothing left to do.
+    core = dist > BLOB_STROKES * stroke
+    if not core.any():
+        return ink, 0
+    labels, count = ndimage.label(patch)
+    if not count:
+        return ink, 0
+    blob = np.zeros(count + 1, bool)
+    blob[np.unique(labels[core])] = True
+    blob[0] = False
+    out = ink.copy()
+    out[box] = patch & ~blob[labels]
+    return out, int(blob.sum())
+
+
 def render(ink, line_h):
     """The ink mask as a PNG, downscaled to the size tesseract reads best."""
     im = Image.fromarray(np.where(ink, 0, 255).astype(np.uint8))
@@ -286,8 +346,9 @@ def ocr(path, lang="eng"):
     ink = load_ink(path)
     bands = row_bands(ink)
     if not bands:
-        return "", 0, 0
+        return "", 0, 0, 0
     ink, dropped = despeckle(ink, bands)
+    ink, blobs = deblob(ink)
     bands = row_bands(ink) or bands
     line_h = float(np.median([b - a for a, b in bands]))
 
@@ -297,7 +358,7 @@ def ocr(path, lang="eng"):
             render(close_gouges(ink, line_h), line_h), lang, workdir
         )
     text = sealed if sealed_conf > plain_conf else plain
-    return text, len(bands), dropped
+    return text, len(bands), dropped, blobs
 
 
 def clean(raw, lang="eng"):
@@ -511,7 +572,7 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1):
         else:
             results = (ocr(path, lang) for path in paths)
 
-        for stamp, path, (text, want, dropped) in zip(stamps, paths, results):
+        for stamp, path, (text, want, dropped, blobs) in zip(stamps, paths, results):
             changes = None
             if stamp in corrections and corrections[stamp] != text:
                 changes = word_diff(text, corrections[stamp])
@@ -526,7 +587,7 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1):
             # enough to earn the noise. `want` and `got` are still on the
             # record for a caller that wants to look.
             warning = "warning: {} OCR'd to nothing".format(path.name) if not text else None
-            yield Cue(stamp, path, text, want, got, dropped, changes, warning)
+            yield Cue(stamp, path, text, want, got, dropped, blobs, changes, warning)
     finally:
         if pool is not None:
             pool.shutdown(wait=False)
@@ -591,9 +652,14 @@ def main():
             print(cue.warning, file=sys.stderr)
             warnings += 1
         if args.dry_run:
+            notes = []
+            if cue.dropped:
+                notes.append("{} speck removed".format(cue.dropped))
+            if cue.blobs:
+                notes.append("{} blob removed".format(cue.blobs))
             print("{}{}\n{}\n".format(
                 cue.stamp,
-                "  [{} speck removed]".format(cue.dropped) if cue.dropped else "",
+                "  [{}]".format(", ".join(notes)) if notes else "",
                 cue.text,
             ))
 

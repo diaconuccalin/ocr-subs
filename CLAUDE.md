@@ -22,15 +22,15 @@ that every transformation is inspectable and deterministic.
 - `tesseract 4.1.1` / leptonica 1.82.0 for the command line, invoked as a subprocess.
 - `numpy 1.26.4`, `scipy 1.10.1` (`ndimage`), `pillow 10.2.0`.
 - `tessdata/` holds `eng.traineddata` + `por.traineddata` for the command line.
-  Installing language data system-wide needs root, so `setup_tessdata` (`:410`)
+  Installing language data system-wide needs root, so `setup_tessdata` (`:457`)
   points `TESSDATA_PREFIX` at this local dir — but only if the env doesn't already
   set it.
-- **`tessdata/configs` is load-bearing.** `run_tesseract` (`:227`) passes `tsv` as a
+- **`tessdata/configs` is load-bearing.** `run_tesseract` (`:269`) passes `tsv` as a
   tesseract *config name*, which tesseract resolves as `$TESSDATA_PREFIX/configs/tsv`.
   Without it tesseract writes a plain `.txt`, **exits 0**, and `read` then fails on a
   `.tsv` that was never written — for every image. It is currently a symlink into
   `/usr/share/tesseract-ocr/4.00/`, which is why `tessdata/` is not committed.
-  `setup_tessdata` checks for this at startup and says so plainly (`:428`).
+  `setup_tessdata` checks for this at startup and says so plainly (`:475`).
 - The browser gets its own copies of all of the above from `vendor/`, and needs
   none of this installed.
 
@@ -56,7 +56,7 @@ whole program.
 └ 0:04:29.960 ┘└ 0:04:33.719 ┘└ ignored id ┘
 ```
 
-`NAME_RE` (`:39`) parses it; `parse_timestamp` (`:115`) renders the canonical SRT
+`NAME_RE` (`:42`) parses it; `parse_timestamp` (`:158`) renders the canonical SRT
 line `00:04:29,960 --> 00:04:33,719`.
 
 ## Shape of the module
@@ -64,66 +64,71 @@ line `00:04:29,960 --> 00:04:33,719`.
 Three functions are the seam both front ends drive, so that the browser has no
 code path of its own:
 
-- `plan` (`:437`) — steps 1 and 2. Everything decided before an image is read.
-- `transcribe` (`:494`) — steps 3 to 5, a generator yielding one `Cue` (`:104`) per cue.
+- `plan` (`:484`) — steps 1 and 2. Everything decided before an image is read.
+- `transcribe` (`:537`) — steps 3 to 5, a generator yielding one `Cue` (`:117`) per cue.
 - `render_srt` (`:535`) — step 6.
 
-`main` (`:541`) is a thin consumer of those three. `Abort` (`:88`) subclasses
+`main` (`:541`) is a thin consumer of those three. `Abort` (`:101`) subclasses
 `SystemExit`, so `raise Abort(...)` prints and exits 1 on the command line exactly
 as a bare `SystemExit` did, while the browser can catch it and tell a bad input
 apart from a crash. Warnings that the command line prints to stderr go through a
-`report` callback (`to_stderr`, `:98`) so the page can show them instead.
+`report` callback (`to_stderr`, `:111`) so the page can show them instead.
 
 **When changing any of this, the test that matters is that the command line's
 stdout, stderr and exit code stay byte-identical across all eleven film dirs.**
 
 ## Pipeline
 
-### Step 1 — collect the images (`collect`, `:341`)
+### Step 1 — collect the images (`collect`, `:388`)
 
 Globs `*.jpeg`/`*.jpg`, maps timestamp-line → path. Warns about unparseable
-filenames; **hard-fails** if two images claim the same range (`:351`) — that would
+filenames; **hard-fails** if two images claim the same range (`:398`) — that would
 silently drop a cue.
 
-### Step 2 — decide the cue list (`plan`, `:437`)
+### Step 2 — decide the cue list (`plan`, `:484`)
 
 - **With a template**: it supplies cue order and numbering. Timestamp lines are
-  extracted (`srt_timestamps`, `:366`) and cross-checked **both directions** — any
-  SRT entry without an image, or image without an entry, aborts (`:470`). That
+  extracted (`srt_timestamps`, `:413`) and cross-checked **both directions** — any
+  SRT entry without an image, or image without an entry, aborts (`:517`). That
   check is why a mis-parsed filename can't quietly place a subtitle at the wrong time.
 - **Without one**: cue list is the filenames sorted chronologically (`sort_key`,
-  `:404`), numbered 1..N by `build`.
+  `:451`), numbered 1..N by `build`.
 
-### Step 3 — OCR each image (`ocr`, `:279`)
+### Step 3 — OCR each image (`ocr`, `:321`)
 
-1. **`load_ink`** (`:126`) — grayscale, threshold at `INK_THRESHOLD` → boolean ink mask.
-2. **`row_bands`** (`:132`) — runs of inked rows = rendered text lines. Bands under
+1. **`load_ink`** (`:171`) — grayscale, threshold at `INK_THRESHOLD` → boolean ink mask.
+2. **`row_bands`** (`:177`) — runs of inked rows = rendered text lines. Bands under
    `MIN_BAND_RATIO` of the tallest are speckle. The band count is the *expected*
    line count, used by step 5.
-3. **`despeckle`** (`:150`) — removes JPEG dirt that tesseract reads as a stray word.
+3. **`despeckle`** (`:195`) — removes JPEG dirt that tesseract reads as a stray word.
    Per line: label connected components, treat those ≥ `GLYPH_RATIO` of line height
    as letters, take their x-span, then *iteratively* grow that span over nearby
    small components (within `PUNCT_GAP` line heights) so punctuation survives — the
    loop repeats because each dot of `...` only reaches its neighbour. Blank the rest.
-4. **`render`** (`:199`) — mask back to PNG, downscaled so a line is ~`TARGET_LINE_PX`
+4. **`deblob`** (`:212`) — removes solid blots lying *on* the words, which
+   `despeckle` keeps because they are neither small nor far from the text. A
+   mark fatter than `BLOB_STROKES` times the frame's median ink thickness is
+   dropped whole. **This one trades losses for wins** — see its own section
+   below before touching it.
+5. **`render`** (`:241`) — mask back to PNG, downscaled so a line is ~`TARGET_LINE_PX`
    tall. Sources are 8–11k px wide, far past what tesseract reads well; measuring on
    the *ink* rather than the image makes this resolution-independent.
-5. **The two-render trick** — some films use a drop-shadow display face that knocks
+6. **The two-render trick** — some films use a drop-shadow display face that knocks
    white gouges out of its own strokes, shredding letters after thresholding.
-   `close_gouges` (`:214`) morphologically closes the mask to seal them (iterated 3×3
+   `close_gouges` (`:256`) morphologically closes the mask to seal them (iterated 3×3
    instead of a big disk: same result, ~30× faster). But closing also thickens
    ordinary strokes enough to turn `0` into `8`, so **both** renders are OCR'd and the
-   higher mean word-confidence wins, ties to plain (`:299`).
-6. **`read`** (`:253`) — parses **TSV**, not plain text, for two reasons: per-word
+   higher mean word-confidence wins, ties to plain (`:341`).
+7. **`read`** (`:295`) — parses **TSV**, not plain text, for two reasons: per-word
    confidences (needed for the choice above) and block/paragraph/line columns, so
    two-line cues come back as two lines.
    - Where that TSV comes from is the module's one pluggable point: `TESSERACT`
-     (`:250`) defaults to `run_tesseract` (`:227`), which runs
+     (`:292`) defaults to `run_tesseract` (`:269`), which runs
      `tesseract - <base> -l <lang> --psm 6 tsv` as a subprocess. `--psm 6` (uniform
      block) is the mode that preserves line breaks. WebAssembly has no subprocesses,
      so `worker-py.js` rebinds `TESSERACT` to a call into tesseract.js; nothing else
      in the pipeline can tell.
-7. **`clean`** (`:303`) — runs inside `read`, i.e. on *both* renders, but confidence is
+8. **`clean`** (`:346`) — runs inside `read`, i.e. on *both* renders, but confidence is
    computed on tesseract's raw words, so cleaning never influences which render wins.
    - Folds the four curly quotes to straight (`QUOTE_MAP`, applied before splitting).
    - Per line: `" ".join(line.split())`; empty lines dropped entirely.
@@ -131,9 +136,9 @@ silently drop a cue.
      `i` near-identical. Four subs, all anchored by `(?<![^\s-])` — "preceded by
      whitespace, a hyphen, or start of string". The hyphen is there because a leading
      `-` marks the second speaker in a two-line cue and shouldn't detach the word.
-     - Three run one way (`:315-317`): a bare `|` or `l` is the pronoun "I", as is
+     - Three run one way (`:358-360`): a bare `|` or `l` is the pronoun "I", as is
        either one carrying a contraction (`l'm`) or opening `If`.
-     - One runs the other way (`:321`): a lowercase `i` that has lost its dot comes
+     - One runs the other way (`:364`): a lowercase `i` that has lost its dot comes
        back as `t` or `l`, and neither `ts` nor `ls` is a word standing alone. The
        trailing `(?!')` leaves a token carrying a contraction alone, since `is'` is
        not English either and the shape is then probably something else entirely.
@@ -149,7 +154,7 @@ silently drop a cue.
      `In` → `in`, bare `1` → `I`) were each correct too, and were all rejected for
      resting on one or two observations. See the corrections analysis below.
 
-### The dirt `despeckle` does not catch, and one failed attempt on it
+### `deblob`: the dirt `despeckle` does not catch
 
 Some rips carry solid marks lying *across* the words — scratches and blots, not
 the scatter of specks `despeckle` was written for. They are big enough and close
@@ -158,23 +163,30 @@ reads them as letters: a wedge over "mud" comes back as `Mud`, a slash beside
 `this.` becomes `this?`, `my uncle` becomes `niy$dncle`. The source bitmaps are
 perfectly legible; the text is only wrong because of what is lying on it.
 
-**A thickness threshold was tried for this and does not work.** The reasoning was
-that a face has one stroke width, so a mark far fatter than a stroke cannot be a
-glyph. For each connected mark, take the largest distance-to-background anywhere
-in it and compare with the median of that distance over all ink:
+`deblob` (`:212`) removes them, on a thickness test: a face has one stroke
+width, so a mark far fatter than a stroke is not a glyph. For each connected
+mark take the largest distance-to-background anywhere in it, and drop the mark
+whole if that exceeds `BLOB_STROKES` times the median of that distance over all
+ink. The threshold came from the gap on `test_extracted`:
 
 | on `test_extracted` | ratio |
 |---|---|
 | thickest real glyph (a capital `M`, `N` or `W` junction) | 3.75x |
 | thinnest piece of dirt | 5.15x |
 
-A cutoff of 4.4 sits in the middle of that gap, fixed five of the fourteen cues
-flagged on that film and touched none of the other eighty. Across all eleven
-films it changed 34 cues of 1251: **16 clearly fixed, 8 clearly broken**, 5 mixed,
-5 garbage either way. The breaks are the reason it was reverted rather than the
-ratio — they turn *correct* text into plausible wrong text (`48ºC` to `458ºC`,
-`consiste` to `consis`, `Maravilha` to `Aaravilha`), which review will not catch,
-whereas the fixes turn visible garbage into words.
+**This is a judgement call that was taken deliberately, not a clean win.** Over
+the eleven films it changes 34 cues of 1251: **16 better, 7 worse, 1 mixed**,
+plus 10 that are garbage either way. Every one of the 34 was read against its
+source bitmap, so those labels are checked rather than guessed — though 5 of the
+16 are only partly fixed, closer to the truth and still wrong.
+
+The losses are the quiet kind and that is the cost being accepted: they turn
+*correct* text into plausible wrong text — `48ºC` into `458ºC`, `consiste` into
+`consis`, `Maravilha` into `Aaravilha` — which reading the output will not
+reliably catch, where the wins turn visible garbage into words. **Read what
+comes out; do not trust a clean-looking run.** `--dry-run` prints a
+`[N blob removed]` note on every cue this touched, which is the list to check
+first.
 
 The measurement that killed it: the median ink half-thickness the ratio is taken
 against runs **2.0 px in `dizemos` and `o_que`, 3.6 in `ora_esta`, 4.0 in
@@ -185,11 +197,11 @@ built to catch — and at 2 px the ratio is quantised into steps of 0.5, so it i
 noisiest exactly where it does most damage. No cutoff separates those two
 populations, so this is not a constant that wants retuning.
 
-The first suspect was the normaliser — the median stroke is **not**
+**Do not try to improve it by renormalising.** The median stroke is not
 scale-invariant, and everything else here is measured against line height for
-exactly that reason. So the obvious repair was tried too, and **it fails as
-well.** Against a set of marks known to be dirt (removing them fixed the text)
-and marks known to be glyphs (removing them broke it):
+exactly that reason, so that repair looks obvious. It was tried, and it fails.
+Against a set of marks known to be dirt (removing them fixed the text) and marks
+known to be glyphs (removing them broke it):
 
 | normaliser | known dirt | known glyphs |
 |---|---|---|
@@ -248,26 +260,27 @@ and one (`o_que`, `thd`→`and` while breaking three other words) is really mixe
 Call it **16 better, 7 worse, 1 mixed**, on a population of 34, which carries
 wide error bars whichever way it is read.
 
-A real attempt needs a labelled set of marks drawn from every film, built before
-any threshold is chosen, and judged on cues nobody used to design it. Until
-then, these cues are a `corrections.json` job: the damage is obvious to a person
-and genuinely ambiguous to geometry.
+Anything better needs a labelled set of marks drawn from every film, built
+before any threshold is chosen, and judged on cues nobody used to design it —
+and it needs to answer "is this mark touching type", which is the question that
+actually decides the outcome. Until then `BLOB_STROKES` is a dial with a known
+cost, and the cues it cannot reach are a `corrections.json` job.
 
 ### Step 4 — corrections sidecar
 
-- **Load** (`load_corrections`, `:322`): `{}` if absent, so the default sidecar is
-  opt-out-by-absence, not an error. **Every key starting with `_` is dropped** (`:327`)
+- **Load** (`load_corrections`, `:369`): `{}` if absent, so the default sidecar is
+  opt-out-by-absence, not an error. **Every key starting with `_` is dropped** (`:374`)
   — that's what makes the sidecars self-documenting (`_comment`, `_verified`,
   `_outline_renders`, per-cue notes). Path is `image_dir / corrections_name`.
-- **Validate** (`:481-486`): keys matching no image → warning, not fatal.
-- **Apply** (`:511-514`): only when `corrections[stamp] != text`, so an entry that
+- **Validate** (`:528-533`): keys matching no image → warning, not fatal.
+- **Apply** (`:558-561`): only when `corrections[stamp] != text`, so an entry that
   already matches the OCR is a silent no-op and isn't listed as applied. Happens
   **before** the step-5 checks, so a correction of the right shape silences them.
-- **Diff** (`word_diff`, `:330`): whitespace-split + `difflib.SequenceMatcher`, skip
+- **Diff** (`word_diff`, `:377`): whitespace-split + `difflib.SequenceMatcher`, skip
   `equal`, `∅` for an empty side. `('utiful?' -> 'it beautiful?')`, `('b' -> '∅')`.
   Because `split()` ignores newlines, a correction that only changes *line breaks*
   is still applied but prints an empty diff.
-- **Report** to stderr after the loop (`:603-607`), keyed by `stamp[:12]`.
+- **Report** to stderr after the loop (`:649-653`), keyed by `stamp[:12]`.
 - **The page never does any of this** — it always passes `no_corrections=True`.
   Step 4 is a command-line feature, and the five films with a sidecar come out
   visibly rougher in the browser.
@@ -298,10 +311,10 @@ to do it.
 
 ### Step 5 — warnings
 
-One check per cue (`:519-529`), on the text *after* corrections: `not text` →
+One check per cue (`:562-566`), on the text *after* corrections: `not text` →
 "OCR'd to nothing". It is **purely informational and never aborts**. The only
-fatal conditions are elsewhere: duplicate images (`:351`), no images (`:448`),
-template mismatch (`:470`).
+fatal conditions are elsewhere: duplicate images (`:398`), no images (`:495`),
+template mismatch (`:517`).
 
 **There used to be a second check** comparing the band count from step 3.2
 (`want`) with `len(text.splitlines())` (`got`), and it is worth knowing why it
@@ -323,22 +336,22 @@ a little bad text now passes silently**, since "OCR'd to nothing" only fires on
 an empty result. `want` and `got` are still carried on the `Cue` record, so
 reinstating a check means writing the condition, not re-deriving the data.
 
-### Step 6 — write (`render_srt`, `:535`)
+### Step 6 — write (`render_srt`, `:578`)
 
-`fill` (`:377`) with a template — keeps each block's number and timestamp, swaps the
-`[sub_duration]` placeholder for the OCR'd body. `build` (`:395`) without — emits
+`fill` (`:424`) with a template — keeps each block's number and timestamp, swaps the
+`[sub_duration]` placeholder for the OCR'd body. `build` (`:442`) without — emits
 `N / timestamp / text` numbered chronologically. Line endings match the template
 (CRLF if it had them, CRLF by default when building fresh) because SRT players are
 picky. `--dry-run` prints each transcription plus a speck count and returns early.
 
 ## `--jobs`
 
-`transcribe(..., workers=N)` maps `ocr` over a `ThreadPoolExecutor` (`:506`). Safe:
+`transcribe(..., workers=N)` maps `ocr` over a `ThreadPoolExecutor` (`:553`). Safe:
 `ocr` is a pure function of `(path, lang)` with its own `TemporaryDirectory`, and no
 module state is mutated after startup. `Executor.map` yields in *input* order, so
 corrections and warnings still come out in strict cue order — **`--jobs 4` must
 produce byte-identical output to `--jobs 1`, which is how to test it**. It also sets
-`OMP_THREAD_LIMIT=1` (`:504`), because tesseract 4.x uses OpenMP internally and
+`OMP_THREAD_LIMIT=1` (`:551`), because tesseract 4.x uses OpenMP internally and
 several multithreaded copies fight over the same cores. Measured on taxonomia:
 ~2.3 min at `--jobs 1`, ~45 s at `--jobs 4`. The browser does not use this.
 
@@ -382,10 +395,17 @@ Gotchas found the hard way:
   because tesseract.js is a 5.x engine and the local binary is 4.1.1. The differences
   are concentrated in already-degraded cues and go both ways.
 - Speed is close to native: 0.40 s/cue on *Vida Dentro*, 0.79 s/cue on *taxonomia*
-  (242 cues in 3.2 min). Sharding across several Pyodide workers was measured as not
-  worth the ~300 MB per worker it costs; if that changes, shard the cue list.
+  (242 cues in 3.2 min), measured before `deblob`. Sharding across several Pyodide
+  workers was measured as not worth the ~300 MB per worker it costs; if that
+  changes, shard the cue list.
+- **`deblob` costs about 0.3 s a cue**, the distance transform being the whole of
+  it, so it adds roughly half again to a run. Two things keep that down and both
+  must hold if it is touched: the transform runs on the ink's bounding box rather
+  than the frame, and it thresholds *before* labelling, so a clean frame — which
+  most are — never pays for a component pass. Together those took it from 0.49 s
+  to 0.32 s a cue with byte-identical output across all eleven films.
 
-## Tuning constants (`:45-95`)
+## Tuning constants (`:48-108`)
 
 `TARGET_LINE_PX 32`, `INK_THRESHOLD 128`, `MIN_BAND_RATIO 0.3`, `GLYPH_RATIO 0.3`,
 `PUNCT_GAP 0.5`, `SHADOW_CLOSE_FRAC 0.06`. All are expressed relative to the measured
@@ -393,9 +413,9 @@ line height so they hold across films shot at different resolutions — keep it 
 
 ## Known gotchas
 
-- **`:316` is dead code.** `(?<![^\s-])[|l](?=')` never fires: the preceding sub's
+- **`:359` is dead code.** `(?<![^\s-])[|l](?=')` never fires: the preceding sub's
   lookahead `(?![^\s'])` already admits a following apostrophe, so `l'm` is `I'm`
-  before line 316 runs. Harmless, just redundant.
+  before line 359 runs. Harmless, just redundant.
 - **A bare pronoun followed by punctuation is not corrected** — `l.` stays `l.`,
   because `.` fails that same lookahead. Same for `l,` and `l?`. Consistent with the
   module's stated stance ("deliberately tiny"), but a real gap if a cue ends on `I`.
