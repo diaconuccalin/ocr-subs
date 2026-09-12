@@ -69,11 +69,16 @@ def do_plan(image_dir, srt_name):
     })
 
 def do_run(lang):
-    """Steps 3 to 6, reporting each cue as it lands.
+    """Steps 3 to 7, reporting each cue as it lands.
 
     transcribe reads every image once for the film's line height before the
     first cue lands, so that pass reports too: on a long film it is a minute of
     work with nothing to show for it, and a still bar reads as a hang.
+
+    The merge at the end folds the cues the rip split, so the file holds fewer
+    cues than the folder holds images and the page is told both numbers. It runs
+    on raw OCR here, with no sidecar behind it, so a film merges fewer cues in
+    the browser than on the command line.
     """
     p = _state["plan"]
     texts, warnings, done = {}, 0, 0
@@ -89,9 +94,16 @@ def do_run(lang):
             warnings += 1
         done += 1
         js_progress(done)
+    stamps, texts, merges, notes = ocr_subs.merge_repeats(p.stamps, texts, lang)
+    for note in notes:
+        js_warn(note)
+        warnings += 1
+    for merge in merges:
+        js_warn("merged cue %d to %d, which the rip split"
+                % (merge.number, merge.number + len(merge.absorbed) - 1))
     with open("/out.srt", "wb") as f:
-        f.write(ocr_subs.render_srt(p.template, p.stamps, texts, p.newline))
-    return warnings
+        f.write(ocr_subs.render_srt(p.template, stamps, texts, p.newline, merges))
+    return json.dumps({"warnings": warnings, "cues": len(texts)})
 `;
 
 // A directory name from the browser is never allowed to steer where a file lands.
@@ -174,12 +186,15 @@ async function handle(message) {
     await load(message);
   } else if (message.type === "run") {
     const fn = py.globals.get("do_run");
-    const warnings = fn(message.lang);
+    // A merge can leave fewer cues in the file than there were images, so the
+    // run reports both numbers rather than only how many it read.
+    const summary = JSON.parse(fn(message.lang));
     fn.destroy();
     self.postMessage({
       type: "done",
       srt: py.FS.readFile("/out.srt"),
-      warnings,
+      warnings: summary.warnings,
+      cues: summary.cues,
     });
   }
 }

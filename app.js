@@ -296,9 +296,14 @@ async function finished(message) {
     say("error", "Could not save the file", String((error && error.message) || error));
     return;
   }
-  log(state.cues + " cue(s), " + message.warnings + " warning(s)");
-  say(message.warnings ? "" : "ok",
-      state.cues + " cue(s), " + message.warnings + " warning(s). " + where);
+  // The file can hold fewer cues than the folder held images, because the run
+  // merges back the cues the rip split; say so rather than report the images.
+  const written = message.cues || state.cues;
+  const folded = state.cues - written;
+  const summary = written + " cue(s), " + message.warnings + " warning(s)"
+                + (folded ? ", " + folded + " merged" : "");
+  log(summary);
+  say(message.warnings ? "" : "ok", summary + ". " + where);
 }
 
 // -------------------------------------------------------------------- setup

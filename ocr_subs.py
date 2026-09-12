@@ -11,6 +11,11 @@ this script replaces every `[sub_duration]` placeholder with the text OCR'd
 from the image whose filename matches that range. Without it, the SRT is built
 from the filenames alone, which is how a film with no template is handled.
 
+Where the rip split one subtitle across several images — the bitmap redrawn
+mid-display, so the same line arrives two or three times in a row — those cues
+are folded back into one and the output is renumbered; `--no-merge` keeps them
+apart.
+
     ./ocr_subs.py --dir "De Sol a Sol" --srt "2024 De Sol a Sol.srt"
     ./ocr_subs.py --dir "Vida Dentro"
 """
@@ -162,6 +167,38 @@ LOCAL_WORDS = Path(__file__).resolve().parent / "words.txt"
 # anything, so they are never reported.
 SUSPECT_LENGTH = 4
 
+# The rips sometimes emit one subtitle as several images: the bitmap is redrawn
+# — the dirt on the scan moves, the caption is re-typeset, a glyph drops out —
+# and every redraw becomes its own file, its own cue, its own repeat of the same
+# line. Two cues carrying the same text this close together are that, and are
+# folded back into one. Measured over the eleven films: of the 33 adjacent pairs
+# that carry identical text, 22 sit 1 ms apart (the rippers write the end of a
+# cue as the next one's start minus a millisecond, which is how they say "the
+# display never stopped"), one sits 10 ms apart with byte-identical images, and
+# seven more sit 67 to 301 ms apart — one to seven frames — every one of which
+# was read against its bitmap and is the same caption drawn twice.
+#
+# The population this must not touch is at the other end: `on_the_sea` shows
+# `Until the next sea arrives.` three times from an identical bitmap, 2.7 s
+# apart, on purpose. Nothing in the corpus falls between 542 ms and 2671 ms,
+# which is the room this threshold sits in rather than a boundary measured to
+# the millisecond.
+MERGE_GAP_MS = 500
+
+# Identical text further apart than that is reported and left alone, up to here.
+# It fires once in 1336 cues, on `Vida Dentro` 107/108 at 542 ms, where the
+# second image is a half-drawn re-render and only its sidecar makes the two
+# texts equal. Past this, a repeat is assumed to be a repeat.
+MERGE_REPORT_MS = 1000
+
+# A neighbour need not read identically to be the same caption: the same line
+# OCR'd twice through different dirt comes back a word or two apart. These two
+# say how far apart the texts, and each differing word inside them, may be
+# before they are no longer plausibly the same line. See `reconcile`, which is
+# the only thing that can act on it, and only in English.
+MERGE_NEAR_RATIO = 0.9
+MERGE_NEAR_EDITS = 3
+
 
 class Abort(SystemExit):
     """A bad input rather than a bug.
@@ -188,6 +225,12 @@ Cue = collections.namedtuple(
 Plan = collections.namedtuple(
     "Plan", "by_timestamp stamps template newline default_out corrections"
 )
+
+# One record per run of cues folded into one: the timestamp line the run now
+# carries, the original stamps in order, the cue number the run started at, how
+# it was decided (`identical` or `reconciled`) and, when reconciling changed a
+# word, what it changed.
+Merge = collections.namedtuple("Merge", "stamp absorbed number kind changes")
 
 
 def parse_timestamp(path):
@@ -660,6 +703,190 @@ def word_diff(before, after):
     return changes
 
 
+def stamp_ms(half):
+    """Milliseconds from one half of a timestamp line, `00:04:29,960`."""
+    hours, minutes, rest = half.split(":")
+    seconds, thousandths = rest.split(",")
+    return (
+        ((int(hours) * 60 + int(minutes)) * 60 + int(seconds)) * 1000
+        + int(thousandths)
+    )
+
+
+def stamp_gap(first, second):
+    """Milliseconds of blank between one cue and the next, negative if they overlap."""
+    return stamp_ms(second[:12]) - stamp_ms(first[17:])
+
+
+def stamp_span(first, last):
+    """One timestamp line covering both: the start of `first`, the end of `last`."""
+    return first[:12] + " --> " + last[17:]
+
+
+def edit_distance(before, after):
+    """Levenshtein, asked only whether two words are the same word misread."""
+    if before == after:
+        return 0
+    previous = list(range(len(after) + 1))
+    for i, left in enumerate(before, 1):
+        row = [i]
+        for j, right in enumerate(after, 1):
+            row.append(min(
+                previous[j] + 1, row[j - 1] + 1, previous[j - 1] + (left != right)
+            ))
+        previous = row
+    return previous[-1]
+
+
+def in_word_list(token, words):
+    """Is this token an English word, whatever punctuation it arrived wearing?"""
+    core = re.sub(r"^[^A-Za-z']+|[^A-Za-z']+$", "", token)
+    return bool(core) and (
+        core in words or core.lower() in words or core.capitalize() in words
+    )
+
+
+def reconcile(before, after, lang="eng"):
+    """The same caption read twice, resolved word by word, or None.
+
+    Two renders of one subtitle come back a word or two apart, and the word list
+    can often say which reading is the real one: of `camp` and `eamp` only one is
+    English. So where exactly one side of a differing pair is in the list, that
+    side wins; where both are (`tear` and `teat`) or neither is (`Tupamaro` and
+    `Tiipamaro`), the earlier render is kept, and if *no* differing word at all is
+    in the list there is no evidence here and this returns None for the caller to
+    report instead.
+
+    The gates in front of that are what keep it off two cues that merely
+    resemble each other. The texts must be `MERGE_NEAR_RATIO` alike; they must
+    have the same shape, line for line and word for word, which is what excludes
+    the four pairs in these films where a second speaker's line appears between
+    one cue and the next; half the words must already agree; and each differing
+    pair must be within `MERGE_NEAR_EDITS` of its twin, which is a misreading
+    rather than a different word.
+
+    English only: this is the word list talking, and there is no Portuguese one.
+    Measured over the eleven films it merges three pairs and all three are right
+    — see "Step 6" in CLAUDE.md. Its known cost is the tie: where both words are
+    real the earlier cue simply wins, on no evidence, so the merge report prints
+    the word-level diff of everything this changed.
+    """
+    if lang != "eng":
+        return None
+    words = english_words()
+    if not words:
+        return None
+    if difflib.SequenceMatcher(None, before, after).ratio() < MERGE_NEAR_RATIO:
+        return None
+    left, right = before.split("\n"), after.split("\n")
+    if len(left) != len(right):
+        return None
+    lines = []
+    for one, other in zip(left, right):
+        words_before, words_after = one.split(), other.split()
+        if len(words_before) != len(words_after):
+            return None
+        lines.append(list(zip(words_before, words_after)))
+    differing = [pair for line in lines for pair in line if pair[0] != pair[1]]
+    if not differing or len(differing) * 2 > sum(len(line) for line in lines):
+        return None
+    if any(edit_distance(x, y) > MERGE_NEAR_EDITS for x, y in differing):
+        return None
+    if not any(
+        in_word_list(x, words) or in_word_list(y, words) for x, y in differing
+    ):
+        return None
+    return "\n".join(
+        " ".join(
+            y if x != y and in_word_list(y, words) and not in_word_list(x, words)
+            else x
+            for x, y in line
+        )
+        for line in lines
+    )
+
+
+def repeat_notes(stamps, texts, folded, lang):
+    """Neighbours that look like one cue but cannot be merged on the evidence.
+
+    A report and nothing else, in the manner of the suspect-word report, and
+    keyed to the cue numbers `transcribe` and `--dry-run` already use, which are
+    the numbers before anything folds. Two cases: identical text just past the
+    merge window, and a near-identical neighbour `reconcile` would not resolve.
+    """
+    notes = []
+    for number, (first, second) in enumerate(zip(stamps, stamps[1:]), 1):
+        if second in folded:
+            continue
+        before, after = texts[first], texts[second]
+        gap = stamp_gap(first, second)
+        if not before or not after or gap < 0:
+            continue
+        if before == after:
+            if MERGE_GAP_MS < gap <= MERGE_REPORT_MS:
+                notes.append(
+                    "warning: cue {} and {} carry the same text {} ms apart".format(
+                        number, number + 1, gap
+                    )
+                )
+        elif gap <= MERGE_GAP_MS:
+            alike = difflib.SequenceMatcher(None, before, after).ratio()
+            if alike >= MERGE_NEAR_RATIO and reconcile(before, after, lang) is None:
+                notes.append(
+                    "warning: cue {} and {} are {:.0f}% alike {} ms apart, "
+                    "perhaps one cue the rip split".format(
+                        number, number + 1, alike * 100, gap
+                    )
+                )
+    return notes
+
+
+def merge_repeats(stamps, texts, lang="eng"):
+    """Step 6: fold the cues the rip split back into one.
+
+    A subtitle redrawn mid-display becomes several images, several filenames and
+    so several cues carrying the same line back to back. A run of neighbours is
+    folded while the next one reads the same (or `reconcile`s against what the
+    run has read so far) and sits within `MERGE_GAP_MS` of it; the run keeps the
+    first cue's start and the last one's end. Overlapping cues and empty text
+    never fold, which is also what keeps a template that is not in chronological
+    order safe.
+
+    Returns the cue list and texts to render, the `Merge` records to report, and
+    the notes for the neighbours that were left alone.
+    """
+    kept, merged, merges, folded = [], {}, [], set()
+    index = 0
+    while index < len(stamps):
+        run, text, kind = [stamps[index]], texts[stamps[index]], "identical"
+        while index + len(run) < len(stamps):
+            following = stamps[index + len(run)]
+            gap = stamp_gap(run[-1], following)
+            joined = None
+            if text and texts[following] and 0 <= gap <= MERGE_GAP_MS:
+                if texts[following] == text:
+                    joined = text
+                else:
+                    joined = reconcile(text, texts[following], lang)
+                    if joined is not None:
+                        kind = "reconciled"
+            if joined is None:
+                break
+            text = joined
+            run.append(following)
+        stamp = run[0] if len(run) == 1 else stamp_span(run[0], run[-1])
+        kept.append(stamp)
+        merged[stamp] = text
+        if len(run) > 1:
+            merges.append(Merge(
+                stamp, tuple(run), index + 1, kind,
+                tuple(word_diff(texts[run[0]], text)),
+            ))
+            folded.update(run[1:])
+        index += len(run)
+    return kept, merged, merges, repeat_notes(stamps, texts, folded, lang)
+
+
 def collect(image_dir, report=to_stderr):
     """Map each timestamp line to its image, failing loudly on ambiguity."""
     by_timestamp = {}
@@ -696,9 +923,20 @@ def srt_timestamps(text):
     return stamps
 
 
-def fill(text, texts):
-    """Replace each block's placeholder with the OCR'd text for its timestamp."""
+def fill(text, texts, merges=()):
+    """Replace each block's placeholder with the OCR'd text for its timestamp.
+
+    A merge leaves the template holding more blocks than there are cues: the
+    first block of a run takes the merged range and the merged text, the rest
+    are dropped, and the numbering the template otherwise supplies is rewritten
+    1..N so the file comes out without holes in it. With nothing merged the
+    template's own numbers are kept, untouched, which is what keeps the output
+    of a film that merges nothing exactly as it was.
+    """
+    opening = {m.absorbed[0]: m.stamp for m in merges}
+    absorbed = {s for m in merges for s in m.absorbed[1:]}
     out_blocks = []
+    number = 0
     for block in text.strip().split("\n\n"):
         lines = block.splitlines()
         stamp = next(
@@ -707,9 +945,17 @@ def fill(text, texts):
         if stamp is None:
             out_blocks.append(block)
             continue
-        body = texts[stamp]
+        if stamp in absorbed:
+            continue
+        number += 1
+        merged = opening.get(stamp, stamp)
+        body = texts[merged]
         head = lines[: lines.index(next(l for l in lines if l.strip() == stamp)) + 1]
         rest = [l for l in lines[len(head):] if l.strip() != PLACEHOLDER]
+        if merges:
+            head = [
+                str(number) if l.strip().isdigit() else l for l in head[:-1]
+            ] + [merged]
         out_blocks.append("\n".join(head + [body] + rest))
     return "\n\n".join(out_blocks) + "\n"
 
@@ -876,9 +1122,9 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1,
             pool.shutdown(wait=False)
 
 
-def render_srt(template, stamps, texts, newline):
+def render_srt(template, stamps, texts, newline, merges=()):
     """The finished SRT as bytes, with the line endings the caller asked for."""
-    body = fill(template, texts) if template else build(stamps, texts)
+    body = fill(template, texts, merges) if template else build(stamps, texts)
     return body.replace("\n", newline).encode("utf-8")
 
 
@@ -906,6 +1152,11 @@ def main():
         "--no-corrections",
         action="store_true",
         help="use raw OCR only, ignoring the corrections sidecar",
+    )
+    ap.add_argument(
+        "--no-merge",
+        action="store_true",
+        help="keep every image as its own cue, even when the rip split one subtitle",
     )
     ap.add_argument(
         "--jobs",
@@ -950,20 +1201,42 @@ def main():
                 cue.text,
             ))
 
+    images = len(texts)
+    stamps, merges = p.stamps, ()
+    if not args.no_merge:
+        stamps, texts, merges, notes = merge_repeats(p.stamps, texts, args.lang)
+        for note in notes:
+            print(note, file=sys.stderr)
+            warnings += 1
+
     if applied:
         print("\ncorrections applied ({} cue(s)):".format(len(applied)), file=sys.stderr)
         for stamp, changes in applied:
             for was, now in changes:
                 print("  {}  {!r} -> {!r}".format(stamp[:12], was, now), file=sys.stderr)
 
+    if merges:
+        print("\nmerged {} cue(s) into {}:".format(
+            sum(len(m.absorbed) for m in merges), len(merges)), file=sys.stderr)
+        for m in merges:
+            # Say when the word list was what settled it: a reconciled run has
+            # thrown a reading away, and where the two readings tied it did so
+            # without a diff to show for it.
+            print("  cues {}-{} -> {}{}".format(
+                m.number, m.number + len(m.absorbed) - 1, m.stamp,
+                "  (reconciled)" if m.kind == "reconciled" else ""),
+                file=sys.stderr)
+            for was, now in m.changes:
+                print("      {!r} -> {!r}".format(was, now), file=sys.stderr)
+
     if args.dry_run:
         print(
-            "\n{} image(s), {} warning(s); nothing written".format(len(texts), warnings),
+            "\n{} image(s), {} warning(s); nothing written".format(images, warnings),
             file=sys.stderr,
         )
         return
 
-    out_path.write_bytes(render_srt(p.template, p.stamps, texts, p.newline))
+    out_path.write_bytes(render_srt(p.template, stamps, texts, p.newline, merges))
     print(
         "wrote {} ({} cues, {} warning(s))".format(out_path, len(texts), warnings)
     )

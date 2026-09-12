@@ -58,6 +58,21 @@ no line of text in it — `cue 43 read 1 line(s) from 2 bands of ink`. That is
 almost always a line the rip degraded past reading, and it is worth looking at
 the image before trusting the cue. It only ever reports.
 
+### Cues the rip split in two
+
+A rip sometimes draws one subtitle more than once — the dirt on the scan shifts,
+the caption is re-typeset, a glyph drops out — and every redraw arrives as its
+own image, so the same line turns up two or three times in a row. Those are
+folded back into one cue that runs from the first one's start to the last one's
+end, and the file is renumbered. In English, where two renders read *almost* the
+same, the word list decides between them word by word: of `camp` and `eamp` only
+one is a word, so only one can be what the screen said. Where it can't tell —
+`tear` and `teat` are both English — the earlier reading stands.
+
+Anything it merged is listed at the end of the run, with the word-level diff of
+anything the word list changed, and neighbours that look like one cue but cannot
+be settled are reported and left alone. `--no-merge` turns the whole thing off.
+
 ### What the page does *not* do
 
 It always runs raw OCR. The command line can additionally apply a

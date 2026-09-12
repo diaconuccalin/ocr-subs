@@ -10,7 +10,7 @@ directory. Everything else here is per-film data.
 Worth stating plainly, because "OCR + text correction" invites the assumption.
 The only recognition step is **tesseract** (classical LSTM OCR) — the local binary
 on the command line, the same engine compiled to WebAssembly in the browser.
-Steps 4, 5 and 6 below are pure `re`, `json` and `difflib`. The `corrections.json`
+Steps 4 to 7 below are pure `re`, `json` and `difflib`. The `corrections.json`
 sidecars are **hand-written by a person**, not generated. `ocr_subs.py` imports
 only stdlib plus `numpy`, `PIL`, `scipy`; there are no API keys and no provider
 SDKs anywhere in the project, and the page makes no request to anything but its
@@ -50,7 +50,9 @@ python3 ocr_subs.py --dir taxonomia --lang por --dry-run                  # insp
 
 `--srt` is resolved relative to `--dir`. Output defaults to `<template>.filled.srt`
 with a template, `<dirname>.srt` without. Other flags: `--out`, `--lang`, `--jobs`,
-`--corrections` (default `corrections.json`, read from `--dir`), `--no-corrections`.
+`--corrections` (default `corrections.json`, read from `--dir`),
+`--no-corrections`, and `--no-merge`, which keeps every image as its own cue
+even where the rip split one subtitle across several.
 
 ## The input contract
 
@@ -67,14 +69,15 @@ line `00:04:29,960 --> 00:04:33,719`.
 
 ## Shape of the module
 
-Three functions are the seam both front ends drive, so that the browser has no
+Four functions are the seam both front ends drive, so that the browser has no
 code path of its own:
 
-- `plan` (`:723`) — steps 1 and 2. Everything decided before an image is read.
-- `transcribe` (`:776`) — steps 3 to 5, a generator yielding one `Cue` (`:181`) per cue.
-- `render_srt` (`:833`) — step 6.
+- `plan` (`:1000`) — steps 1 and 2. Everything decided before an image is read.
+- `transcribe` (`:1053`) — steps 3 to 5, a generator yielding one `Cue` (`:214`) per cue.
+- `merge_repeats` (`:839`) — step 6, folding the cues the rip split.
+- `render_srt` (`:1120`) — step 7.
 
-`main` (`:839`) is a thin consumer of those three. `Abort` (`:165`) subclasses
+`main` (`:1126`) is a thin consumer of those four. `Abort` (`:165`) subclasses
 `SystemExit`, so `raise Abort(...)` prints and exits 1 on the command line exactly
 as a bare `SystemExit` did, while the browser can catch it and tell a bad input
 apart from a crash. Warnings that the command line prints to stderr go through a
@@ -593,13 +596,128 @@ result, and this only on a line lost entirely, so **a cue that returns a little
 bad text still passes silently** — that is what the suspect report and reading
 the output are for.
 
-### Step 6 — write (`render_srt`, `:578`)
+### Step 6 — merge the cues the rip split (`merge_repeats`, `:839`)
 
-`fill` (`:424`) with a template — keeps each block's number and timestamp, swaps the
-`[sub_duration]` placeholder for the OCR'd body. `build` (`:442`) without — emits
+The rips sometimes emit **one subtitle as several images**. The bitmap is
+redrawn mid-display — the dirt on the scan moves, the caption is re-typeset, a
+glyph drops out — and every redraw becomes its own file, its own filename, its
+own cue, so the SRT carries the same line two or three times in a row. The
+sidecars were already papering over this by hand: `taxonomia/corrections.json`
+holds four *pairs* of consecutive entries reconstructed to the same text, which
+is a person doing a merge's job one cue at a time.
+
+A run of neighbours is folded while the next one reads the same and sits within
+`MERGE_GAP_MS` of it. The run keeps the first cue's start and the last one's
+end. Overlapping cues never fold (`gap < 0`), which is also what keeps a
+template that is not in chronological order safe, and empty text never folds.
+
+**The threshold is the whole argument.** Over the eleven films, 33 adjacent
+pairs carry identical text:
+
+| gap | count | what it is |
+|---|---|---|
+| 1 ms | 22 | the rippers' contiguous convention — a cue's end is the next one's start minus a millisecond, which is how they say the display never stopped |
+| 10 ms | 1 | `test_extracted`'s convention; those two images are **byte-identical** |
+| 67–301 ms | 7 | one to seven frames; every one was read against its bitmap and is the same caption drawn twice (`[Âncora] Bom dia!`, `Diane Arbus says:`, `Você!`) |
+| 542 ms | 1 | `Vida Dentro` 107/108, where the second image is a half-drawn re-render and only the sidecar makes the two texts equal |
+| 2671, 2837 ms | 2 | `on_the_sea` shows `Until the next sea arrives.` three times from an **identical bitmap, on purpose** |
+
+The refrain at the bottom of that table is the population a threshold must
+exclude, and **nothing in the corpus falls between 542 ms and 2671 ms** — so
+500 ms is a threshold sitting in a hole two seconds wide, not a boundary
+measured to the millisecond. Between 500 ms and `MERGE_REPORT_MS` identical text
+is *reported* instead, which fires once, on that `Vida Dentro` pair.
+
+Read against the general gap census the reading is plain: gaps cluster at
+42/84/126/168/210/251/293 ms, which is one to seven frames at 24 fps, and 464 of
+the 1335 boundaries are the 1 ms contiguity marker.
+
+It absorbs **33 cues of 1336**, in seven of the eleven films: `Ruvinho` 101→99,
+`dizemos` 255→252, `o_que` 121→116, `on_the_sea` 68→66, `onde` 104→103,
+`taxonomia` 242→224, `test_extracted` 85→83.
+
+**Corrections change the population, and that is not a bug to fix.** A sidecar
+is what makes two degraded renders read alike: with sidecars `taxonomia` merges
+18 cues and `onde` 1; on raw OCR — which is what the browser runs — `taxonomia`
+merges 11 and `onde` none.
+
+#### Near-identical neighbours (`reconcile`, `:744`)
+
+Two renders of one subtitle usually do *not* read identically: the same line
+through different dirt comes back a word or two apart. **17 contiguous pairs**
+are 90 % alike without being equal, and they cannot be merged on similarity
+alone, because four of them are genuinely different cues where a second
+speaker's line appears between one and the next (`-If I?`, `- Aaaa...`,
+`eu sei!`, `- Aham`).
+
+What settles it is the word list. Where exactly one side of a differing pair is
+in `words.txt`, that side is the real reading and wins; where both are (`tear`
+and `teat`) or neither is (`Tupamaro` and `Tiipamaro`), the earlier render is
+kept; and **if no differing word at all is in the list there is no evidence
+here**, so the pair is reported rather than merged. In front of that sit the
+gates that keep it off two cues that merely resemble each other: the texts must
+be `MERGE_NEAR_RATIO` alike, must have the same shape line for line and word for
+word (this is what excludes those four), must already agree on half their words,
+and each differing pair must be within `MERGE_NEAR_EDITS` of its twin.
+
+English only — it is the word list talking, and there is no Portuguese one.
+
+It merges **three pairs in 1336 cues** and all three are right:
+
+| | in | out |
+|---|---|---|
+| `o_que` 95/96 | `…in the camp…` + `ro tear down…`, then `…in the eamp…` + `to teat down…` | `…in the camp…` + `to tear down…` |
+| `o_que` 100/101 | `…people lived.` and `…people lived,` | `…people lived.` |
+| `test_extracted` 72/73 | `'That huge hall…` and `That huge hall…` | `That huge hall…` |
+
+The first is the one worth reading twice: `camp` comes from the earlier render,
+`to` from the later one, and `tear` is kept because `tear` and `teat` are both
+English words. The merged text is therefore a line that appeared in **neither**
+image, assembled from two readings of the same one.
+
+**The known cost is the tie.** Where both words are real the earlier cue wins on
+no evidence, so two genuinely different cues one word apart would fold and the
+later word would go silently. Nothing in these films does that — the four that
+would are excluded by the shape gate — but it is why the merge report prints the
+word-level diff of everything `reconcile` changed. Read it.
+
+#### What it reports and never touches
+
+`repeat_notes` (`:804`) is the other half, in the manner of the suspect-word
+report: identical text just past the merge window, and a near-identical
+neighbour `reconcile` would not resolve. **15 lines over the eleven films** — 1
+identical-but-542 ms-apart, 6 Portuguese (no word list), 7 whose line structure
+differs, and `Tupamaro!` / `Tiipamaro!`, where neither reading is a word. They
+are keyed to the cue numbers from *before* the merge, which is what step 5's
+warnings and the `--dry-run` transcript use.
+
+**A fuzzier rule was measured and is not here.** Merging on similarity alone
+would fold those four second-speaker cues away; choosing between two full texts
+rather than word by word would have to pick a loser; and requiring *every*
+differing word to be decided — the first rule written — merges one pair in 1336
+instead of three, because `tear`/`teat` and `lived.`/`lived,` are ties and a tie
+is not a reason to keep two cues.
+
+### Step 7 — write (`render_srt`, `:1120`)
+
+`fill` (`:921`) with a template — keeps each block's number and timestamp, swaps the
+`[sub_duration]` placeholder for the OCR'd body. `build` (`:958`) without — emits
 `N / timestamp / text` numbered chronologically. Line endings match the template
 (CRLF if it had them, CRLF by default when building fresh) because SRT players are
 picky. `--dry-run` prints each transcription plus a speck count and returns early.
+
+**A merge is the one thing that makes `fill` depart from its template**, and it
+has to: the run's first block takes the merged range and the merged text, the
+rest of the run's blocks are dropped, and the numbering — which the template
+otherwise supplies — is rewritten 1..N so the file comes out without holes in
+it. With nothing merged the template's numbers are kept untouched, so a film
+that merges nothing is byte-for-byte what it was.
+
+That renumbering is the one cost of the merge worth knowing about: a warning
+printed during step 5 names the cue's number *before* anything folded, so on a
+film that merges, a warning's number runs ahead of the output's. The merge
+report is what reconciles them — it names the cues it folded, by those same
+pre-merge numbers.
 
 ## `--jobs`
 
@@ -660,6 +778,11 @@ Gotchas found the hard way:
   (Python, then the packages, then the pipeline) so a stalled stage can be
   named, and two minutes without `ready` prints the hard-refresh and
   unregister-the-service-worker advice.
+- **The merge means the file holds fewer cues than the folder holds images**,
+  so `do_run` returns both numbers as JSON rather than a bare warning count, and
+  the finished banner says how many were merged. The bar still counts images,
+  because that is what is being read. With no sidecar behind it the browser
+  merges fewer cues than the command line — `taxonomia` 11 against 18.
 - **The run has two passes and the bar shows both.** `film_line_height` reads
   every image before the first cue lands, so `transcribe` takes a `progress`
   callback; `do_run` passes `js_measure`, which posts a `measure` message, and
@@ -694,9 +817,13 @@ Gotchas found the hard way:
 `PUNCT_GAP 0.5`, `SHADOW_CLOSE_FRAC 0.06`. All are expressed relative to the measured
 line height so they hold across films shot at different resolutions — keep it that way.
 
-The other two are not dials of the same kind. `BLOB_STROKES 4.4` and
+The others are not dials of the same kind. `BLOB_STROKES 4.4` and
 `LINE_MERGE_RATIO 1.7` each sit on a measured boundary with its own section
-above, and each has a known cost; read the section before changing either.
+above, and each has a known cost; read the section before changing either. So do
+the four the merge uses — `MERGE_GAP_MS 500`, `MERGE_REPORT_MS 1000`,
+`MERGE_NEAR_RATIO 0.9`, `MERGE_NEAR_EDITS 3` — except that the first of those
+sits in a two-second hole in the data rather than on a boundary, and is the one
+constant here that is measured in time rather than against the type.
 
 ## Known gotchas
 
@@ -713,16 +840,19 @@ above, and each has a known cost; read the section before changing either.
 Each film dir holds the JPEGs, optionally a template `.srt` (the ones containing
 `[sub_duration]`) and optionally `corrections.json`. None of it is committed.
 
-| dir | imgs | template | corrections | lang |
-|---|---|---|---|---|
-| De Sol a Sol | 22 | yes | yes | eng |
-| Ruvinho | 101 | yes | – | eng |
-| Vida Dentro | 177 | – (built from filenames) | yes | eng |
-| dizemos | 255 | yes | – | por |
-| fragmentary | 68 | yes | yes | eng |
-| o_que | 121 | yes | – | eng |
-| on_the_sea | 68 | yes | – | por |
-| onde | 104 | yes | yes | eng |
-| ora_esta | 93 | yes | – | por |
-| taxonomia | 242 | yes | yes | por |
-| thanksgiving | 0 | – | – | source only |
+`cues` is what the SRT ends up holding: fewer than `imgs` wherever step 6 found
+a subtitle the rip had split.
+
+| dir | imgs | cues | template | corrections | lang |
+|---|---|---|---|---|---|
+| De Sol a Sol | 22 | 22 | yes | yes | eng |
+| Ruvinho | 101 | 99 | yes | – | eng |
+| Vida Dentro | 177 | 177 | – (built from filenames) | yes | eng |
+| dizemos | 255 | 252 | yes | – | por |
+| fragmentary | 68 | 68 | yes | yes | eng |
+| o_que | 121 | 116 | yes | – | eng |
+| on_the_sea | 68 | 66 | yes | – | por |
+| onde | 104 | 103 | yes | yes | eng |
+| ora_esta | 93 | 93 | yes | – | por |
+| taxonomia | 242 | 224 | yes | yes | por |
+| thanksgiving | 0 | – | – | – | source only |
