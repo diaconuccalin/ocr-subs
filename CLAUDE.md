@@ -156,27 +156,30 @@ silently drop a cue.
 
 ### Step 5 — warnings
 
-Two checks per cue (`:515-530`), on the text *after* corrections:
+One check per cue (`:515-525`), on the text *after* corrections: `not text` →
+"OCR'd to nothing". It is **purely informational and never aborts**. The only
+fatal conditions are elsewhere: duplicate images (`:351`), no images (`:448`),
+template mismatch (`:470`).
 
-- `not text` → "OCR'd to nothing".
-- `got < want` → "looks like N line(s) but OCR'd to M", where `want` is the band
-  count from step 3.2 (post-despeckle) and `got` is `len(text.splitlines())`. A
-  geometric cross-check: the ink visibly separates into N bands, tesseract
-  returned fewer lines than that.
+**There used to be a second check** comparing the band count from step 3.2
+(`want`) with `len(text.splitlines())` (`got`), and it is worth knowing why it
+is gone, because the idea is tempting enough to be reinvented.
 
-**Only that direction is checked, and the asymmetry is the point.** A band is a
-run of inked rows, and no fully blank row can fall inside a single line of text,
-so the band count can never *overcount* lines — but it can undercount, because a
-film with tight leading, where a descender meets the ascender below it, merges
-two real lines into one band. So `got > want` is the band count being wrong
-rather than the OCR, and warning about it is pure noise: it fired 50 times across
-the eleven films, 38 of them in `o_que` alone, on cues that were transcribed
-perfectly. `got < want` is the genuine anomaly and stays.
+A band is a run of inked rows, and no fully blank row can fall inside a single
+line of text — so the band count can never *overcount* lines, only undercount
+them, which it does whenever the leading is tight enough that a descender meets
+the ascender below it and two real lines merge into one band. That made
+`got > want` a false alarm every time: 44 of the 46 line-count warnings across
+the eleven films were this direction, 38 in `o_que` alone, all on cues that were
+transcribed perfectly.
 
-The `elif` means an empty result reports only the first. `transcribe` builds the
-string and the caller decides what to do with it; both feed one counter that is
-**purely informational and never aborts**. The only fatal conditions are elsewhere:
-duplicate images (`:351`), no images (`:448`), template mismatch (`:470`).
+The other direction, `got < want`, was sound — `onde` has a cue with two clear
+bands of ink that OCR'd to the two characters `AR`, and only this caught it. It
+was dropped anyway, on the grounds that two true positives in eleven films did
+not pay for the noise they arrived with. **The cost is real: a cue that returns
+a little bad text now passes silently**, since "OCR'd to nothing" only fires on
+an empty result. `want` and `got` are still carried on the `Cue` record, so
+reinstating a check means writing the condition, not re-deriving the data.
 
 ### Step 6 — write (`render_srt`, `:537`)
 

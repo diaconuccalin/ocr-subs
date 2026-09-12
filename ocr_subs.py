@@ -513,21 +513,15 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1):
                 changes = word_diff(text, corrections[stamp])
                 text = corrections[stamp]
             got = len(text.splitlines())
-            if not text:
-                warning = "warning: {} OCR'd to nothing".format(path.name)
-            elif got < want:
-                # Only this direction means anything. A band is a run of inked
-                # rows, and no fully blank row can fall inside one line of text,
-                # so bands never overcount: where the leading is tight enough
-                # that a descender meets the ascender below it, two real lines
-                # merge into one band and `got > want` is the band count being
-                # wrong, not the OCR. Fewer lines than bands is the anomaly —
-                # the ink plainly separates into N, and tesseract returned less.
-                warning = "warning: {} looks like {} line(s) but OCR'd to {}".format(
-                    path.name, want, got
-                )
-            else:
-                warning = None
+            # There is deliberately no line-count cross-check. Comparing the
+            # band count with the number of lines returned cried wolf far too
+            # often to be worth it: a band is a run of inked rows, so tight
+            # leading merges two real lines into one band and the common
+            # direction was always the geometry being wrong rather than the
+            # OCR. The rarer direction did catch real failures, but not often
+            # enough to earn the noise. `want` and `got` are still on the
+            # record for a caller that wants to look.
+            warning = "warning: {} OCR'd to nothing".format(path.name) if not text else None
             yield Cue(stamp, path, text, want, got, dropped, changes, warning)
     finally:
         if pool is not None:
