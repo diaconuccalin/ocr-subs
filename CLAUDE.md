@@ -202,14 +202,56 @@ the dirt *and* stubbier than all of it; `dizemos` has a capital `M` fatter than
 the dirt the threshold was built for. Fatness and shape, alone or renormalised,
 do not separate these two populations.
 
-Combining fatness and slenderness does separate all ten of those marks — and
-that result should be distrusted, because it is two free parameters fitted to
-ten hand-picked points, which is the same mistake that produced 4.4 one level
-up. A real attempt needs a labelled set of marks drawn from every film, built
-before any threshold is chosen, and it should be assumed to fail until it is
-measured against cues nobody used to design it. Until then, these cues are a
-`corrections.json` job: the damage is obvious to a person and genuinely
-ambiguous to geometry.
+Combining fatness and slenderness separates all ten of those marks, and that
+result is worthless: two free parameters fitted to ten hand-picked points. It
+was measured properly afterwards and **it eats punctuation** — on the one film
+it was designed for it changed 74 cues of 85, 56 of them by losing punctuation
+alone, destroying 89 marks. A comma is fat-but-stubby by construction. The ten
+marks never showed it because they were sampled as "thickest component per
+image", which is always a blot or a capital and never a comma. Sampling the
+population that cannot expose your failure is the whole lesson.
+
+**What the artifact actually is.** Reading the source bitmaps for all 34 changed
+cues: it is nearly always a *solid blob*, and the films differ in where it lands.
+In `dizemos` and `ora_esta` the blobs sit in the counters of round letters — an
+`o` with a filled-in hole. In `o_que` they are ink spatter and long diagonal
+scratches. `test_extracted` gets wedges and slashes lying across the words.
+
+**Which way it goes is decided by one thing:** whether the blob is a separate
+connected component or fused to the glyph.
+
+- **Separate** — a disc sitting inside the bowl of an `o` without touching it.
+  Removing it leaves the letter whole, and the word comes back right. This is
+  every one of the 16 fixes: `tomara`, `obrigado`, `minutos`, `falando de vocês`,
+  `Chile` twice, `remember`.
+- **Fused** — the blob touches the stroke, so it and the letter are one
+  component, and removing it takes the letter too. This is every one of the
+  breaks: `Maravilha` to `Aaravilha`, `your` to `yeu`, `consiste` to `consis`.
+
+That is why no *thickness* threshold can work: a filled-in `o` and a blot of
+dirt are not merely hard to tell apart, they are the same object. The question
+that matters is not how fat a mark is but whether it is touching type, and
+whole-component removal cannot ask it.
+
+**Two films are rendered as hollow outline type** — `dizemos` in part, and the
+display face on one `o_que` cue. There "thickness" measures the outline stroke
+rather than the glyph, so the premise does not even apply. That `o_que` cue is
+the one the threshold destroyed outright.
+
+**How far to trust the 16:8.** The 34 were the complete set of changes over 1251
+cues in eleven films that had no part in choosing 4.4 — not a sample, which is
+what makes it worth more than the ten-mark exercise. But none of the 34 has a
+sidecar entry, so there was no ground truth: the labels were one reading. Every
+one was afterwards checked against the source bitmap. The 16 fixes all hold,
+though 5 are partial — closer to the truth, still wrong. Of the 8 breaks, 7 hold
+and one (`o_que`, `thd`→`and` while breaking three other words) is really mixed.
+Call it **16 better, 7 worse, 1 mixed**, on a population of 34, which carries
+wide error bars whichever way it is read.
+
+A real attempt needs a labelled set of marks drawn from every film, built before
+any threshold is chosen, and judged on cues nobody used to design it. Until
+then, these cues are a `corrections.json` job: the damage is obvious to a person
+and genuinely ambiguous to geometry.
 
 ### Step 4 — corrections sidecar
 
