@@ -897,6 +897,53 @@ template it had found, so the numbering changed with the folder's contents and
 nothing on screen said why. `--srt` is a command-line feature, like the
 corrections sidecar, and ten of the eleven films use it there.
 
+### How it looks
+
+The design is not this file's invention: it is the canvas beside the repo,
+`../OCR Subs.dc.html`, with `.thumbnail` next to it as the picture of what it
+should come out like. That file is a Claude Design document — a mock-up whose
+theme is a JavaScript object of tokens — and `app.css` is that object
+transcribed into custom properties under the same names, `bg card chip line
+dash ink inkSoft inkFaint accent input status meta tile`, so the two can be
+read side by side. A Newsreader headline with a clementine arrow over
+Instrument Sans text, a 720px column, soft cards, an olive tile behind each
+icon, pill buttons.
+
+Three things about it are decisions rather than transcription:
+
+- **The tokens are written as sRGB hex, not as the design's `oklch()`.** The
+  values are the same colours — the oklch original is in a comment beside each
+  one — but a browser that does not know `oklch` drops the whole declaration,
+  and what is left is a page with no accent, no borders and no cards, which is
+  much worse than a page whose orange is a hundredth off. This is not
+  hypothetical: it is what the first screenshot of this design showed, in
+  Chromium 110. `color-mix()` was replaced the same way, by the three
+  `--*-edge` tokens, which are the accent, status and danger colours at the
+  alpha the design mixed them to.
+- **`--danger` and `--danger-soft` are this page's own**, because the design
+  has no error state to copy and the page has three: the banner that says a run
+  stopped, the one that says the worker could not start, and the
+  cross-origin-isolation notice. They are mixed in the same idiom as the rest.
+- **The fonts and icons are served from this origin**, which is the one
+  property of the page that a design file has no reason to know about. The
+  design links `fonts.googleapis.com`; a page that is cross-origin isolated
+  cannot load a `no-cors` stylesheet from anywhere else, and "no request to
+  anything but its own origin" is a property this project keeps. So the three
+  WOFF2 files live in `vendor/fonts/` and the five Material Symbols are inlined
+  as SVG paths — in `index.html` for the four fixed ones, in `app.js` for the
+  two the theme button swaps between.
+
+**The theme has three states, and the button names where it would take you.**
+No attribute on `<html>` means "follow the system", which is where a first
+visit starts; the button writes `data-theme` and `localStorage["ocrsubs-theme"]`
+and there is no way back to following the system once it is clicked. The
+stylesheet therefore carries the dark tokens twice — once under
+`@media (prefers-color-scheme: dark)` guarded by `:root:not([data-theme="light"])`,
+once under `:root[data-theme="dark"]` — because CSS has no way to name a set of
+declarations and use it from two selectors. A three-line script in `<head>`
+applies the stored choice before the first paint; without it a visitor who
+chose dark gets a white flash on every load.
+
 `read` is synchronous and tesseract.js is promise-based, so the Python worker really
 does block: it writes the render into a `SharedArrayBuffer`, posts to the page, and
 `Atomics.wait`s. That is why the worker exists (blocking the main thread is not

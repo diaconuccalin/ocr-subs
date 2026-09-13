@@ -4,7 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Subtitle images → SRT</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<!-- Newsreader, Instrument Sans and JetBrains Mono, served from this origin:
+     the design asks for them, and a third-party font host is both a request
+     this page does not make and a CORP header a cross-origin-isolated page
+     would not get. -->
+<link rel="stylesheet" href="vendor/fonts/fonts.css">
 <link rel="stylesheet" href="app.css">
+<!-- The theme has to be on the element before the first paint, or a visitor who
+     chose dark gets a white flash on every load. app.js wires the button; this
+     only reads what the button wrote. -->
+<script>
+  try {
+    const saved = localStorage.getItem("ocrsubs-theme");
+    if (saved === "dark" || saved === "light") {
+      document.documentElement.dataset.theme = saved;
+    }
+  } catch (e) {}
+</script>
 <!-- Registers a service worker that supplies the COOP/COEP headers GitHub Pages
      cannot set. SharedArrayBuffer needs them, and the page reloads itself once
      on a first visit to pick them up. Must load before anything else. -->
@@ -12,29 +29,61 @@
 </head>
 <body>
 
-<main>
-  <h1>Subtitle images → SRT</h1>
-  <p class="lede">
-    Turns a folder of subtitle images into a timed <code>.srt</code>. Everything runs
-    in this tab, on your own machine — nothing is uploaded anywhere.
-  </p>
+<main class="shell">
+
+  <header>
+    <div class="title-row">
+      <span class="mark" aria-hidden="true">
+        <!-- Material Symbols Outlined, Apache-2.0: subtitles, folder_open,
+             expand_more, dark_mode, light_mode. Inlined rather than pulled in
+             as a webfont, which would be a third-party request and two hundred
+             kilobytes for five glyphs. -->
+        <svg viewBox="0 -960 960 960"><path d="M240-320h320v-80H240v80Zm400 0h80v-80h-80v80ZM240-480h80v-80h-80v80Zm160 0h320v-80H400v80ZM160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h640q33 0 56.5 23.5T880-720v480q0 33-23.5 56.5T800-160H160Zm0-80h640v-480H160v480Zm0 0v-480 480Z"/></svg>
+      </span>
+      <h1>Subtitle images <span class="arrow">→</span> SRT</h1>
+      <button type="button" id="theme" title="Switch to the dark theme">
+        <span id="theme-icon" aria-hidden="true">
+          <svg viewBox="0 -960 960 960"><path d="M480-120q-150 0-255-105T120-480q0-150 105-255t255-105q14 0 27.5 1t26.5 3q-41 29-65.5 75.5T444-660q0 90 63 153t153 63q55 0 101-24.5t75-65.5q2 13 3 26.5t1 27.5q0 150-105 255T480-120Zm0-80q88 0 158-48.5T740-375q-20 5-40 8t-40 3q-123 0-209.5-86.5T364-660q0-20 3-40t8-40q-78 32-126.5 102T200-480q0 116 82 198t198 82Zm-10-270Z"/></svg>
+        </span>
+        <span id="theme-label">Dark</span>
+      </button>
+    </div>
+    <p class="lede">
+      Turns a folder of subtitle images into a timed <code>.srt</code>. It is made for
+      the images <a href="https://sourceforge.net/projects/videosubfinder/">VideoSubFinder</a>
+      writes into its <code>TXTImages</code> folder, whose filenames carry each cue's
+      timestamps. Everything runs in this tab, on your own machine — nothing is
+      uploaded anywhere.
+    </p>
+  </header>
 
   <div id="unsupported" class="banner error" hidden></div>
 
-  <section class="frame" id="frame-images">
+  <section class="block" id="frame-images">
     <h2>Subtitle images</h2>
     <label class="drop" id="drop-images">
       <input type="file" id="input-images" multiple accept=".jpg,.jpeg" webkitdirectory>
+      <span class="drop-icon" aria-hidden="true">
+        <svg viewBox="0 -960 960 960"><path d="M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640H447l-80-80H160v480l96-320h684L837-217q-8 26-29.5 41.5T760-160H160Zm84-80h516l72-240H316l-72 240Zm0 0 72-240-72 240Zm-84-400v-80 80Z"/></svg>
+      </span>
       <span class="drop-text">Choose the folder of images, or drop it here</span>
+      <span class="drop-hint">VideoSubFinder's <code>TXTImages</code> folder — one JPEG per cue</span>
     </label>
     <p class="frame-status" id="status-images">No images yet.</p>
   </section>
 
-  <div class="controls">
-    <label for="lang">Language</label>
-    <select id="lang"></select>
+  <section class="controls">
+    <label class="field" for="lang">
+      <span>Language:</span>
+      <span class="select-wrap">
+        <select id="lang"></select>
+        <span class="caret" aria-hidden="true">
+          <svg viewBox="0 -960 960 960"><path d="M480-345 240-585l56-56 184 184 184-184 56 56-240 240Z"/></svg>
+        </span>
+      </span>
+    </label>
     <button id="start" disabled>Create SRT</button>
-  </div>
+  </section>
 
   <div id="report" class="banner" hidden></div>
 
@@ -50,17 +99,18 @@
     <summary><span id="log-count">0</span> message(s) from the run</summary>
     <pre id="log"></pre>
   </details>
-</main>
 
-<footer>
-  <p>
-    The recognition is the <a href="https://tesseract-ocr.github.io/">tesseract</a> engine
-    compiled to WebAssembly; the pipeline around it is this project's own
-    <a href="ocr_subs.py"><code>ocr_subs.py</code></a>, run unmodified by
-    <a href="https://pyodide.org/">Pyodide</a>. No machine learning model is asked to
-    guess at the text, and no data leaves the browser.
-  </p>
-</footer>
+  <footer>
+    <p>
+      The recognition is the <a href="https://tesseract-ocr.github.io/">tesseract</a> engine
+      compiled to WebAssembly; the pipeline around it is this project's own
+      <a href="ocr_subs.py"><code>ocr_subs.py</code></a>, run unmodified by
+      <a href="https://pyodide.org/">Pyodide</a>. No machine learning model is asked to
+      guess at the text, and no data leaves the browser.
+    </p>
+  </footer>
+
+</main>
 
 <script src="vendor/tesseract/tesseract.min.js"></script>
 <script src="app.js"></script>

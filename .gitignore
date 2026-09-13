@@ -13,6 +13,7 @@
 
 # the page
 !index.html
+!favicon.svg
 !app.css
 !app.js
 !worker-py.js
