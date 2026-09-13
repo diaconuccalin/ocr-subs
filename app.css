@@ -356,6 +356,7 @@ footer {
   text-wrap: pretty;
 }
 footer p { margin: 0; }
+footer p + p { margin-top: 10px; }
 footer code { font-size: 0.9em; background: none; padding: 0; }
 
 @media (max-width: 560px) {
