@@ -67,7 +67,10 @@ folded back into one cue that runs from the first one's start to the last one's
 end, and the file is renumbered. In English, where two renders read *almost* the
 same, the word list decides between them word by word: of `camp` and `eamp` only
 one is a word, so only one can be what the screen said. Where it can't tell —
-`tear` and `teat` are both English — the earlier reading stands.
+`tear` and `teat` are both English — the earlier reading stands. Two
+neighbours that end their sentences on different marks are never folded,
+however alike the words in front of those marks read: a question and its answer
+are two cues, not one caption drawn twice.
 
 Anything it merged is listed at the end of the run, with the word-level diff of
 anything the word list changed, and neighbours that look like one cue but cannot
