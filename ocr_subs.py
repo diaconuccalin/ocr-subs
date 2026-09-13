@@ -270,6 +270,8 @@ def to_stderr(message):
 
 
 # One record per cue, carrying everything a caller needs to report on it.
+# `warning` is what is wrong with the cue, without a cue number in front of it:
+# see `renumber`.
 Cue = collections.namedtuple(
     "Cue",
     "number stamp path text want got dropped blobs marked changes warning suspects",
@@ -282,7 +284,8 @@ Plan = collections.namedtuple(
 )
 
 # One record per run of cues folded into one: the timestamp line the run now
-# carries, the original stamps in order, the cue number the run started at, how
+# carries, the original stamps in order, the pre-merge number the run started
+# at — `renumber` turns that into the number the finished file carries — how
 # it was decided (`identical` or `reconciled`) and, when reconciling changed a
 # word, what it changed.
 Merge = collections.namedtuple("Merge", "stamp absorbed number kind changes")
@@ -1095,13 +1098,36 @@ def reconcile(before, after, lang="eng"):
     )
 
 
-def repeat_notes(stamps, texts, folded, lang):
+def renumber(merges):
+    """Map a cue's number before the merge onto the one it carries in the SRT.
+
+    Step 5 raises its warnings while transcribing, which is before the folding
+    is known, but the number a person has in front of them is the number in the
+    finished file. A run of cues folds into its first, so every absorbed
+    position shifts everything after it down by one, and a warning raised on an
+    absorbed cue moves to the cue its text ended up in. With nothing merged
+    this is the identity, which is what keeps a film that folds nothing exactly
+    as it was.
+    """
+    folded = {
+        position
+        for m in merges
+        for position in range(m.number + 1, m.number + len(m.absorbed))
+    }
+
+    def final(number):
+        return number - sum(1 for position in folded if position <= number)
+
+    return final
+
+
+def repeat_notes(stamps, texts, folded, lang, final):
     """Neighbours that look like one cue but cannot be merged on the evidence.
 
     A report and nothing else, in the manner of the suspect-word report, and
-    keyed to the cue numbers `transcribe` and `--dry-run` already use, which are
-    the numbers before anything folds. Two cases: identical text just past the
-    merge window, and a near-identical neighbour `reconcile` would not resolve.
+    keyed — through `final` — to the cue numbers the finished SRT carries, the
+    way step 5's warnings are. Two cases: identical text just past the merge
+    window, and a near-identical neighbour `reconcile` would not resolve.
     """
     notes = []
     for number, (first, second) in enumerate(zip(stamps, stamps[1:]), 1):
@@ -1115,7 +1141,7 @@ def repeat_notes(stamps, texts, folded, lang):
             if MERGE_GAP_MS < gap <= MERGE_REPORT_MS:
                 notes.append(
                     "warning: cue {} and {} carry the same text {} ms apart".format(
-                        number, number + 1, gap
+                        final(number), final(number + 1), gap
                     )
                 )
         elif gap <= MERGE_GAP_MS:
@@ -1126,7 +1152,7 @@ def repeat_notes(stamps, texts, folded, lang):
                 notes.append(
                     "warning: cue {} and {} are {:.0f}% alike {} ms apart, "
                     "perhaps one cue the rip split".format(
-                        number, number + 1, alike * 100, gap
+                        final(number), final(number + 1), alike * 100, gap
                     )
                 )
     return notes
@@ -1175,7 +1201,9 @@ def merge_repeats(stamps, texts, lang="eng"):
             ))
             folded.update(run[1:])
         index += len(run)
-    return kept, merged, merges, repeat_notes(stamps, texts, folded, lang)
+    return kept, merged, merges, repeat_notes(
+        stamps, texts, folded, lang, renumber(merges)
+    )
 
 
 def collect(image_dir, report=to_stderr):
@@ -1406,14 +1434,15 @@ def transcribe(stamps, by_timestamp, corrections, lang="eng", workers=1,
             # came back with no line of text in it. It fires on 2 cues of 1336
             # and both are real — a line lost to dirt, and a line set in outline
             # type that OCR'd to nothing.
-            # Point at the cue's number rather than its filename: that is what
-            # a person checking the result has in front of them.
+            # The cue carries what is wrong with it and not which cue it is:
+            # step 6 may yet fold this cue into its neighbour, and the number a
+            # person checking the result has in front of them is the one in the
+            # finished file. The caller numbers these through `renumber` once
+            # the merge is known, the way it already formats the suspects.
             if not text:
-                warning = "warning: cue {} OCR'd to nothing".format(number)
+                warning = "OCR'd to nothing"
             elif got < want:
-                warning = "warning: cue {} read {} line(s) from {} bands of ink".format(
-                    number, got, want
-                )
+                warning = "read {} line(s) from {} bands of ink".format(got, want)
             else:
                 warning = None
             yield Cue(number, stamp, path, text, want, got, dropped, blobs, marked,
@@ -1481,6 +1510,9 @@ def main():
 
     texts = {}
     applied = []
+    # Step 5's warnings wait for step 6: until the merge has run, the cue
+    # numbers they would carry are not the ones the file comes out with.
+    pending = []
     warnings = 0
     for cue in transcribe(
         p.stamps, p.by_timestamp, p.corrections, args.lang, args.jobs,
@@ -1490,12 +1522,11 @@ def main():
         if cue.changes is not None:
             applied.append((cue.stamp, cue.changes))
         if cue.warning:
-            print(cue.warning, file=sys.stderr)
-            warnings += 1
+            pending.append((cue.number, cue.warning))
         for word, near in cue.suspects:
-            print('warning: cue {} reads "{}", perhaps "{}"'.format(
-                cue.number, word, near), file=sys.stderr)
-            warnings += 1
+            pending.append(
+                (cue.number, 'reads "{}", perhaps "{}"'.format(word, near))
+            )
         if args.dry_run:
             notes = []
             if cue.dropped:
@@ -1511,12 +1542,19 @@ def main():
             ))
 
     images = len(texts)
-    stamps, merges = p.stamps, ()
+    stamps, merges, notes = p.stamps, (), ()
     if not args.no_merge:
         stamps, texts, merges, notes = merge_repeats(p.stamps, texts, args.lang)
-        for note in notes:
-            print(note, file=sys.stderr)
-            warnings += 1
+
+    # Now the folding is known, so every cue number printed from here on is the
+    # number the finished file carries.
+    final = renumber(merges)
+    for number, message in pending:
+        print("warning: cue {} {}".format(final(number), message), file=sys.stderr)
+        warnings += 1
+    for note in notes:
+        print(note, file=sys.stderr)
+        warnings += 1
 
     if applied:
         print("\ncorrections applied ({} cue(s)):".format(len(applied)), file=sys.stderr)
@@ -1531,8 +1569,8 @@ def main():
             # Say when the word list was what settled it: a reconciled run has
             # thrown a reading away, and where the two readings tied it did so
             # without a diff to show for it.
-            print("  cues {}-{} -> {}{}".format(
-                m.number, m.number + len(m.absorbed) - 1, m.stamp,
+            print("  cue {} <- {} images  {}{}".format(
+                final(m.number), len(m.absorbed), m.stamp,
                 "  (reconciled)" if m.kind == "reconciled" else ""),
                 file=sys.stderr)
             for was, now in m.changes:

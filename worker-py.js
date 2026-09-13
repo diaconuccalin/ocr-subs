@@ -82,28 +82,35 @@ def do_run(lang):
     cues than the folder holds images and the page is told both numbers. It runs
     on raw OCR here, with no sidecar behind it, so a film merges fewer cues in
     the browser than on the command line.
+
+    That merge is also why the warnings arrive in one go at the end rather than
+    cue by cue: a cue's number is only settled once the folding is known, so
+    they are held and numbered through renumber, exactly as the command line
+    does it.
     """
     p = _state["plan"]
-    texts, warnings, done = {}, 0, 0
+    texts, pending, warnings, done = {}, [], 0, 0
     for cue in ocr_subs.transcribe(p.stamps, p.by_timestamp, p.corrections, lang,
                                    progress=js_measure):
         texts[cue.stamp] = cue.text
         if cue.warning:
-            js_warn(cue.warning)
-            warnings += 1
+            pending.append((cue.number, cue.warning))
         for word, near in cue.suspects:
-            js_warn('warning: cue %d reads "%s", perhaps "%s"'
-                    % (cue.number, word, near))
-            warnings += 1
+            pending.append((cue.number,
+                            'reads "%s", perhaps "%s"' % (word, near)))
         done += 1
         js_progress(done)
     stamps, texts, merges, notes = ocr_subs.merge_repeats(p.stamps, texts, lang)
+    final = ocr_subs.renumber(merges)
+    for number, message in pending:
+        js_warn("warning: cue %d %s" % (final(number), message))
+        warnings += 1
     for note in notes:
         js_warn(note)
         warnings += 1
     for merge in merges:
-        js_warn("merged cue %d to %d, which the rip split"
-                % (merge.number, merge.number + len(merge.absorbed) - 1))
+        js_warn("merged %d images into cue %d, which the rip split"
+                % (len(merge.absorbed), final(merge.number)))
     with open("/out.srt", "wb") as f:
         f.write(ocr_subs.render_srt(p.template, stamps, texts, p.newline, merges))
     return json.dumps({"warnings": warnings, "cues": len(texts)})
