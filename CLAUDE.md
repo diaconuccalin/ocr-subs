@@ -24,15 +24,15 @@ that every transformation is inspectable and deterministic.
 - `tesseract 4.1.1` / leptonica 1.82.0 for the command line, invoked as a subprocess.
 - `numpy 1.26.4`, `scipy 1.10.1` (`ndimage`), `pillow 10.2.0`.
 - `tessdata/` holds `eng.traineddata` + `por.traineddata` for the command line.
-  Installing language data system-wide needs root, so `setup_tessdata` (`:1297`)
+  Installing language data system-wide needs root, so `setup_tessdata` (`:1356`)
   points `TESSDATA_PREFIX` at this local dir — but only if the env doesn't already
   set it.
-- **`tessdata/configs` is load-bearing.** `run_tesseract` (`:703`) passes `tsv` as a
+- **`tessdata/configs` is load-bearing.** `run_tesseract` (`:715`) passes `tsv` as a
   tesseract *config name*, which tesseract resolves as `$TESSDATA_PREFIX/configs/tsv`.
   Without it tesseract writes a plain `.txt`, **exits 0**, and `read` then fails on a
   `.tsv` that was never written — for every image. It is currently a symlink into
   `/usr/share/tesseract-ocr/4.00/`, which is why `tessdata/` is not committed.
-  `setup_tessdata` checks for this at startup and says so plainly (`:1318`).
+  `setup_tessdata` checks for this at startup and says so plainly (`:1377`).
 - `words.txt` beside the script is the English word list, from SCOWL by way of
   Aspell, with its copyright notice in the header. Two things ask it: the
   suspect report, and `clean`'s de-accent sub. Absent is not an error, but it is
@@ -68,7 +68,7 @@ whole program.
 └ 0:04:29.960 ┘└ 0:04:33.719 ┘└ ignored id ┘
 ```
 
-`NAME_RE` (`:45`) parses it; `parse_timestamp` (`:294`) renders the canonical SRT
+`NAME_RE` (`:45`) parses it; `parse_timestamp` (`:306`) renders the canonical SRT
 line `00:04:29,960 --> 00:04:33,719`.
 
 ## Shape of the module
@@ -76,16 +76,16 @@ line `00:04:29,960 --> 00:04:33,719`.
 Four functions are the seam both front ends drive, so that the browser has no
 code path of its own:
 
-- `plan` (`:1324`) — steps 1 and 2. Everything decided before an image is read.
-- `transcribe` (`:1377`) — steps 3 to 5, a generator yielding one `Cue` (`:275`) per cue.
-- `merge_repeats` (`:1161`) — step 6, folding the cues the rip split.
-- `render_srt` (`:1455`) — step 7.
+- `plan` (`:1383`) — steps 1 and 2. Everything decided before an image is read.
+- `transcribe` (`:1436`) — steps 3 to 5, a generator yielding one `Cue` (`:287`) per cue.
+- `merge_repeats` (`:1220`) — step 6, folding the cues the rip split.
+- `render_srt` (`:1514`) — step 7.
 
-`main` (`:1461`) is a thin consumer of those four. `Abort` (`:257`) subclasses
+`main` (`:1520`) is a thin consumer of those four. `Abort` (`:269`) subclasses
 `SystemExit`, so `raise Abort(...)` prints and exits 1 on the command line exactly
 as a bare `SystemExit` did, while the browser can catch it and tell a bad input
 apart from a crash. Warnings that the command line prints to stderr go through a
-`report` callback (`to_stderr`, `:267`) so the page can show them instead.
+`report` callback (`to_stderr`, `:279`) so the page can show them instead.
 
 `transcribe` reads every image twice: a cheap pass for `film_line_height` before
 the first cue, then the OCR. That pass now returns two things — the film's line
@@ -99,64 +99,64 @@ stdout, stderr and exit code stay byte-identical across all eleven film dirs.**
 
 ## Pipeline
 
-### Step 1 — collect the images (`collect`, `:1209`)
+### Step 1 — collect the images (`collect`, `:1268`)
 
 Globs `*.jpeg`/`*.jpg`, maps timestamp-line → path. Warns about unparseable
-filenames; **hard-fails** if two images claim the same range (`:1219`) — that would
+filenames; **hard-fails** if two images claim the same range (`:1278`) — that would
 silently drop a cue.
 
-### Step 2 — decide the cue list (`plan`, `:1324`)
+### Step 2 — decide the cue list (`plan`, `:1383`)
 
 - **With a template**: it supplies cue order and numbering. Timestamp lines are
-  extracted (`srt_timestamps`, `:1234`) and cross-checked **both directions** — any
-  SRT entry without an image, or image without an entry, aborts (`:1357`). That
+  extracted (`srt_timestamps`, `:1293`) and cross-checked **both directions** — any
+  SRT entry without an image, or image without an entry, aborts (`:1416`). That
   check is why a mis-parsed filename can't quietly place a subtitle at the wrong time.
 - **Without one**: cue list is the filenames sorted chronologically (`sort_key`,
-  `:1291`), numbered 1..N by `build`.
+  `:1350`), numbered 1..N by `build`.
 
-### Step 3 — OCR each image (`ocr`, `:755`)
+### Step 3 — OCR each image (`ocr`, `:767`)
 
-1. **`load_ink`** (`:305`) — grayscale, threshold at `INK_THRESHOLD` → boolean ink mask.
-2. **`row_bands`** (`:311`) — runs of inked rows = rendered text lines. Bands under
+1. **`load_ink`** (`:317`) — grayscale, threshold at `INK_THRESHOLD` → boolean ink mask.
+2. **`row_bands`** (`:323`) — runs of inked rows = rendered text lines. Bands under
    `MIN_BAND_RATIO` of the tallest are speckle. The band count is the *expected*
    line count, used by step 5.
-3. **`despeckle`** (`:579`) — removes JPEG dirt that tesseract reads as a stray word.
+3. **`despeckle`** (`:591`) — removes JPEG dirt that tesseract reads as a stray word.
    Per line: label connected components, treat those ≥ `GLYPH_RATIO` of line height
    as letters, take their x-span, then *iteratively* grow that span over nearby
    small components (within `PUNCT_GAP` line heights) so punctuation survives — the
    loop repeats because each dot of `...` only reaches its neighbour. Blank the rest.
-4. **`deblob`** (`:628`) — removes solid blots lying *on* the words, which
+4. **`deblob`** (`:640`) — removes solid blots lying *on* the words, which
    `despeckle` keeps because they are neither small nor far from the text. A
    mark fatter than `BLOB_STROKES` times the frame's median ink thickness is
    dropped whole. **This one trades losses for wins** — see its own section
    below before touching it.
-5. **`line_h`** (`:780`) — the median band height, which every constant here is
+5. **`line_h`** (`:792`) — the median band height, which every constant here is
    measured against. A band taller than `LINE_MERGE_RATIO` times the film's own
    line height is not one line, so that frame falls back to the film's
-   measurement (`film_line_height`, `:522`). See its own section below.
-6. **`render`** (`:675`) — mask back to PNG, downscaled so a line is ~`TARGET_LINE_PX`
+   measurement (`film_line_height`, `:534`). See its own section below.
+6. **`render`** (`:687`) — mask back to PNG, downscaled so a line is ~`TARGET_LINE_PX`
    tall. Sources are 8–11k px wide, far past what tesseract reads well; measuring on
    the *ink* rather than the image makes this resolution-independent.
 7. **The two-render trick** — some films use a drop-shadow display face that knocks
    white gouges out of its own strokes, shredding letters after thresholding.
-   `close_gouges` (`:690`) morphologically closes the mask to seal them (iterated 3×3
+   `close_gouges` (`:702`) morphologically closes the mask to seal them (iterated 3×3
    instead of a big disk: same result, ~30× faster). But closing also thickens
    ordinary strokes enough to turn `0` into `8`, so **both** renders are OCR'd and the
-   higher mean word-confidence wins, ties to plain (`:789`).
-8. **`read`** (`:729`) — parses **TSV**, not plain text, for two reasons: per-word
+   higher mean word-confidence wins, ties to plain (`:801`).
+8. **`read`** (`:741`) — parses **TSV**, not plain text, for two reasons: per-word
    confidences (needed for the choice above) and block/paragraph/line columns, so
    two-line cues come back as two lines.
    - Where that TSV comes from is the module's one pluggable point: `TESSERACT`
-     (`:726`) defaults to `run_tesseract` (`:703`), which runs
+     (`:738`) defaults to `run_tesseract` (`:715`), which runs
      `tesseract - <base> -l <lang> --psm 6 tsv` as a subprocess. `--psm 6` (uniform
      block) is the mode that preserves line breaks. WebAssembly has no subprocesses,
      so `worker-py.js` rebinds `TESSERACT` to a call into tesseract.js; nothing else
      in the pipeline can tell.
-9. **`clean`** (`:812`) — runs inside `read`, i.e. on *both* renders, but confidence is
+9. **`clean`** (`:824`) — runs inside `read`, i.e. on *both* renders, but confidence is
    computed on tesseract's raw words, so cleaning never influences which render wins.
    - Folds the four curly quotes to straight (`QUOTE_MAP`, applied before splitting).
    - Per line: `" ".join(line.split())`; empty lines dropped entirely.
-   - **A full stop with a space in front of it is dirt** (`:828`), and this one is
+   - **A full stop with a space in front of it is dirt** (`:840`), and this one is
      every language, because it is typography rather than English: punctuation
      attaches to the word before it, so a `.` that follows a space is a speck
      sitting in a word gap — the same dirt as the `_` below, read as a different
@@ -173,9 +173,9 @@ silently drop a cue.
      `i` near-identical. Four of the subs are anchored by `(?<![^\s-])` — "preceded by
      whitespace, a hyphen, or start of string". The hyphen is there because a leading
      `-` marks the second speaker in a two-line cue and shouldn't detach the word.
-     - Three run one way (`:834-836`): a bare `|` or `l` is the pronoun "I", as is
+     - Three run one way (`:846-848`): a bare `|` or `l` is the pronoun "I", as is
        either one carrying a contraction (`l'm`) or opening `If`.
-     - One runs the other way (`:840`): a lowercase `i` that has lost its dot comes
+     - One runs the other way (`:852`): a lowercase `i` that has lost its dot comes
        back as `t` or `l`, and neither `ts` nor `ls` is a word standing alone. The
        trailing `(?!')` leaves a token carrying a contraction alone, since `is'` is
        not English either and the shape is then probably something else entirely.
@@ -226,7 +226,7 @@ silently drop a cue.
        fixes — `between His ribs`, `immortalized Him` — and they are a sidecar's
        job. Do not add them back to pick those up.
    - **A speck sitting above a letter is read as an accent** (`strip_speck_accent`,
-     `:795`), which is the last of the marks-read-as-characters family. A
+     `:807`), which is the last of the marks-read-as-characters family. A
      lower-case token whose plain-ASCII form is in `words.txt` is dirt rather
      than a foreign word: `doés` → `does`, `thé` → `the`, `wé` → `we`. Fires
      on **4 lines in 1765** across the eleven films — 3 right, plus one already
@@ -295,7 +295,7 @@ reads them as letters: a wedge over "mud" comes back as `Mud`, a slash beside
 `this.` becomes `this?`, `my uncle` becomes `niy$dncle`. The source bitmaps are
 perfectly legible; the text is only wrong because of what is lying on it.
 
-`deblob` (`:628`) removes them, on a thickness test: a face has one stroke
+`deblob` (`:640`) removes them, on a thickness test: a face has one stroke
 width, so a mark far fatter than a stroke is not a glyph. For each connected
 mark take the largest distance-to-background anywhere in it, and drop the mark
 whole if that exceeds `BLOB_STROKES` times the median of that distance over all
@@ -420,7 +420,7 @@ So tesseract is handed 16 px a line, half of `TARGET_LINE_PX`, `despeckle` has
 stopped recognising x-height letters as letters, and its reach for punctuation
 has doubled. It costs whole words: `It has` comes back as `Ithas`.
 
-**The fix is a second opinion, not a replacement.** `film_line_height` (`:522`)
+**The fix is a second opinion, not a replacement.** `film_line_height` (`:534`)
 takes the median over every band of every frame in the film, and `ocr` uses it
 only when the frame's own measurement exceeds `LINE_MERGE_RATIO` times it. The
 per-frame band stays in charge everywhere else, and it has to: a band is only as
@@ -465,7 +465,7 @@ these cues are simply being read again, and tesseract moves both ways.
   corrected render's 82.3.
 
 **Propagating the clamp into `despeckle` was tried and is worse.** `despeckle`
-(`:579`) measures its own line height from the *un-clamped* bands, so on these
+(`:591`) measures its own line height from the *un-clamped* bands, so on these
 50 cues `GLYPH_RATIO` and `PUNCT_GAP` are both about 2.2× too large — which is
 exactly why `test_extracted 34` keeps a speck out past the end of its first line
 and reads `again, I`. Handing it the clamped height does remove that speck, so
@@ -595,12 +595,12 @@ for byte.
 
 ### Step 4 — corrections sidecar
 
-- **Load** (`load_corrections`, `:966`): `{}` if absent, so the default sidecar is
-  opt-out-by-absence, not an error. **Every key starting with `_` is dropped** (`:971`)
+- **Load** (`load_corrections`, `:978`): `{}` if absent, so the default sidecar is
+  opt-out-by-absence, not an error. **Every key starting with `_` is dropped** (`:983`)
   — that's what makes the sidecars self-documenting (`_comment`, `_verified`,
   `_outline_renders`, per-cue notes). Path is `image_dir / corrections_name`.
-- **Validate** (`:1367-1373`): keys matching no image → warning, not fatal.
-- **Apply** (`:1424-1426`): only when `corrections[stamp] != text`, so an entry that
+- **Validate** (`:1426-1432`): keys matching no image → warning, not fatal.
+- **Apply** (`:1483-1485`): only when `corrections[stamp] != text`, so an entry that
   already matches the OCR is a silent no-op and isn't listed as applied. Happens
   **before** the step-5 checks, so a correction of the right shape silences them.
   - **The comparison is against the text with its `<i>` tags stripped**, because
@@ -610,11 +610,11 @@ for byte.
     a corrected cue carries only the emphasis its sidecar writes itself. That is
     the right precedence — the sidecar is the authority — but it means the five
     films with a sidecar lose a tag wherever a correction fires.
-- **Diff** (`word_diff`, `:974`): whitespace-split + `difflib.SequenceMatcher`, skip
+- **Diff** (`word_diff`, `:986`): whitespace-split + `difflib.SequenceMatcher`, skip
   `equal`, `∅` for an empty side. `('utiful?' -> 'it beautiful?')`, `('b' -> '∅')`.
   Because `split()` ignores newlines, a correction that only changes *line breaks*
   is still applied but prints an empty diff.
-- **Report** to stderr after the loop (`:1560-1564`), keyed by `stamp[:12]`.
+- **Report** to stderr after the loop (`:1619-1623`), keyed by `stamp[:12]`.
 - **The page never does any of this** — it always passes `no_corrections=True`.
   Step 4 is a command-line feature, and the five films with a sidecar come out
   visibly rougher in the browser.
@@ -650,15 +650,15 @@ informational, never aborting**, and all naming the **cue number** rather than
 the image, because a number is what somebody checking the result has in front of
 them — and, since step 6 may still fold this cue into its neighbour, the number
 the *finished file* carries rather than the one it has here. That is why the cue
-carries the complaint and the caller prints it: see `renumber` (`:1101`) and the
+carries the complaint and the caller prints it: see `renumber` (`:1147`) and the
 note at the end of step 7. The only fatal conditions are elsewhere: duplicate
-images (`:1219`), no images (`:1335`), template mismatch (`:1357`).
+images (`:1278`), no images (`:1394`), template mismatch (`:1416`).
 
 - `not text` → "cue N OCR'd to nothing".
 - `got < want` → `cue 42 read 1 line(s) from 2 bands of ink`. One direction
   only; the section below is the whole argument for that, and it is worth
   reading before touching either half.
-- **The suspect-word report** (`suspects`, `:937`): a lower-case word of four
+- **The suspect-word report** (`suspects`, `:949`): a lower-case word of four
   letters or more that is not in `words.txt` but sits exactly one letter from a
   word that is → `cue 34 reads "clearty", perhaps "clearly"`. Runs on the text
   with its `<i>` tags stripped, or `<i>stories</i>` would be a token it reports
@@ -718,7 +718,7 @@ result, and this only on a line lost entirely, so **a cue that returns a little
 bad text still passes silently** — that is what the suspect report and reading
 the output are for.
 
-### Step 6 — merge the cues the rip split (`merge_repeats`, `:1161`)
+### Step 6 — merge the cues the rip split (`merge_repeats`, `:1220`)
 
 The rips sometimes emit **one subtitle as several images**. The bitmap is
 redrawn mid-display — the dirt on the scan moves, the caption is re-typeset, a
@@ -763,7 +763,7 @@ is what makes two degraded renders read alike: with sidecars `taxonomia` merges
 18 cues and `onde` 1; on raw OCR — which is what the browser runs — `taxonomia`
 merges 11 and `onde` none.
 
-#### Near-identical neighbours (`reconcile`, `:1028`)
+#### Near-identical neighbours (`reconcile`, `:1068`)
 
 Two renders of one subtitle usually do *not* read identically: the same line
 through different dirt comes back a word or two apart. **17 contiguous pairs**
@@ -778,9 +778,47 @@ and `teat`) or neither is (`Tupamaro` and `Tiipamaro`), the earlier render is
 kept; and **if no differing word at all is in the list there is no evidence
 here**, so the pair is reported rather than merged. In front of that sit the
 gates that keep it off two cues that merely resemble each other: the texts must
-be `MERGE_NEAR_RATIO` alike, must have the same shape line for line and word for
-word (this is what excludes those four), must already agree on half their words,
-and each differing pair must be within `MERGE_NEAR_EDITS` of its twin.
+end their sentences on the same marks (below), must be `MERGE_NEAR_RATIO` alike,
+must have the same shape line for line and word for word (this is what excludes
+those four), must already agree on half their words, and each differing pair
+must be within `MERGE_NEAR_EDITS` of its twin.
+
+**A question and its answer end differently, and that is the first gate.** It is
+also the only rule in this file that was not measured into existence. `- Are you
+sure?` and `- Are you sure!` are 97 % alike, their one differing pair is a single
+edit apart, and `in_word_list` strips the punctuation off both sides before it
+asks anything — so both read `sure`, the pair ties, the earlier cue wins and the
+answer is swallowed by the question. Every other gate here waves that pair
+through; `ends_differ` (`:1052`) refuses it. Only `.`, `?` and `!` count
+(`SENTENCE_ENDS`, `:266`), and only against each other:
+
+| rule | merges it would block | reports it would silence |
+|---|---|---|
+| **both ends in `.?!` and differ** | **0** | **0** |
+| any trailing-punctuation difference, a mark against none included | 1 — the `…people lived.` / `…people lived,` merge below | 2 |
+
+So `.` against `,` is not a mismatch — that pair is `o_que` 100/101, one of the
+three merges this function makes — and a mark against *no* mark is not one
+either, because a dropped glyph is the commonest defect in these rips and half
+the sidecar work is putting them back. It is compared line by line rather than
+once per cue, so a two-line `- Yes?` / `- No.` is covered as well; where the line
+counts disagree there is nothing to compare and the shape gate rejects the pair
+on its own account.
+
+**It fires on nothing in the corpus, and that is the honest statement of its
+worth.** All 7 near-identical English pairs end alike, and so do the 10
+Portuguese ones that `repeat_notes` reads without `reconcile` ever running —
+`taxonomia` 129/130 comes closest, at `,` against `.`. So the eleven films are no
+evidence *for* this rule, only that it costs nothing; what argues for it is that
+the failure is reachable today rather than hypothetical. Against the module as
+it stood, `reconcile("- Are you sure?", "- Are you sure!")` returned
+`- Are you sure?`. The bare `-Yes?` / `-Yes!` was already safe, and by accident:
+at five characters those two texts are 80 % alike, under `MERGE_NEAR_RATIO`.
+
+**What it cannot see** is the same pair with the mark dropped. Where OCR loses
+the `?`, both cues read `- Are you sure` and the identical-text path folds them
+without ever consulting this rule. Telling those apart means reading the bitmap,
+so no rule on the text can reach it, and it is a `corrections.json` job.
 
 English only — it is the word list talking, and there is no Portuguese one.
 Every one of its tests asks the word list a question, so it asks about the words
@@ -808,14 +846,18 @@ word-level diff of everything `reconcile` changed. Read it.
 
 #### What it reports and never touches
 
-`repeat_notes` (`:1124`) is the other half, in the manner of the suspect-word
+`repeat_notes` (`:1170`) is the other half, in the manner of the suspect-word
 report: identical text just past the merge window, and a near-identical
 neighbour `reconcile` would not resolve. **15 lines over the eleven films** — 1
 identical-but-542 ms-apart, 6 Portuguese (no word list), 7 whose line structure
 differs, and `Tupamaro!` / `Tiipamaro!`, where neither reading is a word. They
 are keyed, like step 5's warnings, to the cue numbers the finished file carries:
 `merge_repeats` knows what it folded, so it hands `repeat_notes` the `renumber`
-mapping. The `--dry-run` transcript names stamps rather than numbers and is
+mapping. A pair that `ends_differ` refused says so in its own words —
+`cue 12 and 13 are 97% alike 1 ms apart but end differently, so they were left
+alone` — because "perhaps one cue the rip split" is the wrong story to tell about
+a question and its answer. That wording fires on none of the eleven films, so
+the 15 lines above are exactly what they were. The `--dry-run` transcript names stamps rather than numbers and is
 unaffected.
 
 **A fuzzier rule was measured and is not here.** Merging on similarity alone
@@ -825,10 +867,10 @@ differing word to be decided — the first rule written — merges one pair in 1
 instead of three, because `tear`/`teat` and `lived.`/`lived,` are ties and a tie
 is not a reason to keep two cues.
 
-### Step 7 — write (`render_srt`, `:1455`)
+### Step 7 — write (`render_srt`, `:1514`)
 
-`fill` (`:1245`) with a template — keeps each block's number and timestamp, swaps the
-`[sub_duration]` placeholder for the OCR'd body. `build` (`:1282`) without — emits
+`fill` (`:1304`) with a template — keeps each block's number and timestamp, swaps the
+`[sub_duration]` placeholder for the OCR'd body. `build` (`:1341`) without — emits
 `N / timestamp / text` numbered chronologically. Line endings match the template
 (CRLF if it had them, CRLF by default when building fresh) because SRT players are
 picky. `--dry-run` prints each transcription plus a speck count and returns early.
@@ -862,7 +904,7 @@ pre-merge range it came from, which is now the only numbering anything prints.
 
 ## `--jobs`
 
-`transcribe(..., workers=N)` maps `ocr` over a `ThreadPoolExecutor` (`:1401`). Safe:
+`transcribe(..., workers=N)` maps `ocr` over a `ThreadPoolExecutor` (`:1460`). Safe:
 `ocr` is a pure function of `(path, lang, film_line_h)` with its own
 `TemporaryDirectory`, and no module state is mutated after startup. The same pool
 runs the `film_line_height` pre-pass first; a median over every band is
@@ -870,7 +912,7 @@ order-independent, so that is deterministic too. `Executor.map` yields in *input
 order, so corrections and warnings still come out in strict cue order —
 **`--jobs 4` must produce byte-identical output to `--jobs 1`, which is how to
 test it**. It also sets
-`OMP_THREAD_LIMIT=1` (`:1400`), because tesseract 4.x uses OpenMP internally and
+`OMP_THREAD_LIMIT=1` (`:1459`), because tesseract 4.x uses OpenMP internally and
 several multithreaded copies fight over the same cores. Measured on taxonomia:
 ~2.3 min at `--jobs 1`, ~45 s at `--jobs 4`. The browser does not use this.
 
@@ -1019,7 +1061,7 @@ Gotchas found the hard way:
   most are — never pays for a component pass. Together those took it from 0.49 s
   to 0.32 s a cue with byte-identical output across all eleven films.
 
-## Tuning constants (`:57-254`)
+## Tuning constants (`:57-266`)
 
 `TARGET_LINE_PX 32`, `INK_THRESHOLD 128`, `MIN_BAND_RATIO 0.3`, `GLYPH_RATIO 0.3`,
 `PUNCT_GAP 0.5`, `SHADOW_CLOSE_FRAC 0.06`. All are expressed relative to the measured
@@ -1034,6 +1076,9 @@ the four the merge uses — `MERGE_GAP_MS 500`, `MERGE_REPORT_MS 1000`,
 `MERGE_NEAR_RATIO 0.9`, `MERGE_NEAR_EDITS 3` — except that the first of those
 sits in a two-second hole in the data rather than on a boundary, and is the one
 constant here that is measured in time rather than against the type.
+`SENTENCE_ENDS ".?!"` is not a dial of any kind but a set of three marks, and
+the argument for each of them — and for what is deliberately left out, `,` and
+the absent mark — is in the `reconcile` section.
 
 The italic constants are a third kind: a shear is a ratio already, so
 `ITALIC_SHEAR 0.10` and `ITALIC_TOL 0.04` are scale-free without being measured
@@ -1045,7 +1090,7 @@ The section above is the argument for each.
 
 ## Known gotchas
 
-- **`:835` is dead code.** `(?<![^\s-])[|l](?=')` never fires: the preceding sub's
+- **`:847` is dead code.** `(?<![^\s-])[|l](?=')` never fires: the preceding sub's
   lookahead `(?![^\s'])` already admits a following apostrophe, so `l'm` is `I'm`
   before that line runs. Harmless, just redundant.
 - **A bare pronoun followed by punctuation is not corrected** — `l.` stays `l.`,

@@ -253,6 +253,18 @@ MERGE_REPORT_MS = 1000
 MERGE_NEAR_RATIO = 0.9
 MERGE_NEAR_EDITS = 3
 
+# The marks a sentence can end on, and the one thing `reconcile` will not read
+# past. Two neighbours that end their sentences differently are two cues rather
+# than one caption read twice: `- Are you sure?` and `- Are you sure!` are 97 %
+# alike, one edit apart, and tie on the word list once its punctuation is
+# stripped, so nothing else in `reconcile` can tell a question from its answer.
+# Only these three marks count, and only against each other. `.` against `,` is
+# not a mismatch — that pair is `o_que` 100/101, one of the three merges
+# `reconcile` makes — and a mark against no mark is not one either, since a
+# dropped glyph is the commonest defect in these rips. Measured over the eleven
+# films it blocks no merge and silences no report: a guard, not a fix.
+SENTENCE_ENDS = ".?!"
+
 
 class Abort(SystemExit):
     """A bad input rather than a bug.
@@ -1025,6 +1037,34 @@ def in_word_list(token, words):
     )
 
 
+def sentence_ends(text):
+    """The sentence-final mark each line of a cue ends on, `""` where none does.
+
+    Read with the tags stripped, like every other test in `reconcile`: a line
+    italic to its end finishes on `>` and would otherwise measure nothing.
+    """
+    return [
+        line[-1] if line and line[-1] in SENTENCE_ENDS else ""
+        for line in (one.rstrip() for one in strip_italics(text).split("\n"))
+    ]
+
+
+def ends_differ(before, after):
+    """Do two neighbours disagree about how a sentence ends?
+
+    A question and its answer are two cues, however alike the words in front of
+    the mark: see `SENTENCE_ENDS`. Line by line rather than once per cue, so a
+    two-line `- Yes?` / `- No.` is covered as well; where the line counts
+    disagree there is nothing to compare and `reconcile` rejects the pair on its
+    own account anyway. A mark is only ever weighed against another mark, never
+    against a line that ends on none.
+    """
+    left, right = sentence_ends(before), sentence_ends(after)
+    return len(left) == len(right) and any(
+        x and y and x != y for x, y in zip(left, right)
+    )
+
+
 def reconcile(before, after, lang="eng"):
     """The same caption read twice, resolved word by word, or None.
 
@@ -1037,12 +1077,14 @@ def reconcile(before, after, lang="eng"):
     report instead.
 
     The gates in front of that are what keep it off two cues that merely
-    resemble each other. The texts must be `MERGE_NEAR_RATIO` alike; they must
-    have the same shape, line for line and word for word, which is what excludes
-    the four pairs in these films where a second speaker's line appears between
-    one cue and the next; half the words must already agree; and each differing
-    pair must be within `MERGE_NEAR_EDITS` of its twin, which is a misreading
-    rather than a different word.
+    resemble each other. The texts must end their sentences on the same marks,
+    which is what keeps a question from swallowing its answer (`ends_differ`);
+    they must be `MERGE_NEAR_RATIO` alike; they must have the same shape, line
+    for line and word for word, which is what excludes the four pairs in these
+    films where a second speaker's line appears between one cue and the next;
+    half the words must already agree; and each differing pair must be within
+    `MERGE_NEAR_EDITS` of its twin, which is a misreading rather than a
+    different word.
 
     English only: this is the word list talking, and there is no Portuguese one.
     Measured over the eleven films it merges three pairs and all three are right
@@ -1050,6 +1092,10 @@ def reconcile(before, after, lang="eng"):
     real the earlier cue simply wins, on no evidence, so the merge report prints
     the word-level diff of everything this changed.
     """
+    # The first gate asks nothing of the word list, and could not be settled by
+    # it anyway: a question and its answer read alike in front of the mark.
+    if ends_differ(before, after):
+        return None
     if lang != "eng":
         return None
     words = english_words()
@@ -1127,7 +1173,9 @@ def repeat_notes(stamps, texts, folded, lang, final):
     A report and nothing else, in the manner of the suspect-word report, and
     keyed — through `final` — to the cue numbers the finished SRT carries, the
     way step 5's warnings are. Two cases: identical text just past the merge
-    window, and a near-identical neighbour `reconcile` would not resolve.
+    window, and a near-identical neighbour `reconcile` would not resolve —
+    which it says in the second neighbour's own terms where `ends_differ` is
+    what refused it, that being an answer to a question rather than a defect.
     """
     notes = []
     for number, (first, second) in enumerate(zip(stamps, stamps[1:]), 1):
@@ -1149,12 +1197,23 @@ def repeat_notes(stamps, texts, folded, lang, final):
                 None, strip_italics(before), strip_italics(after)
             ).ratio()
             if alike >= MERGE_NEAR_RATIO and reconcile(before, after, lang) is None:
-                notes.append(
-                    "warning: cue {} and {} are {:.0f}% alike {} ms apart, "
-                    "perhaps one cue the rip split".format(
-                        final(number), final(number + 1), alike * 100, gap
+                # Say which of the two it is. A pair that ends its sentences
+                # differently was refused for that reason and nothing else, and
+                # "perhaps one cue the rip split" would be the wrong story to
+                # tell about a question and its answer.
+                if ends_differ(before, after):
+                    message = (
+                        "warning: cue {} and {} are {:.0f}% alike {} ms apart "
+                        "but end differently, so they were left alone"
                     )
-                )
+                else:
+                    message = (
+                        "warning: cue {} and {} are {:.0f}% alike {} ms apart, "
+                        "perhaps one cue the rip split"
+                    )
+                notes.append(message.format(
+                    final(number), final(number + 1), alike * 100, gap
+                ))
     return notes
 
 
