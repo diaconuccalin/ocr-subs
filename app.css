@@ -144,18 +144,39 @@ svg { display: block; fill: currentColor; }
 /* ------------------------------------------------------------------ header */
 
 header { display: flex; flex-direction: column; gap: 16px; }
-.title-row { display: flex; align-items: center; gap: 16px; }
-.mark { flex: none; color: var(--accent); }
+/* --title-size lives here rather than on h1 so the mark can see it too: the
+ * mark is a sibling, and the nudge below has to scale with the headline. */
+.title-row {
+  --title-size: clamp(32px, 5.2vw, 44px);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* align-items: center puts the mark on the centre of the h1's *box*, and that
+ * is not where the title looks like it is. The line box reserves the font's
+ * full descender depth, which "Subtitle images -> SRT" barely touches, so the
+ * letters sit high in it: measured from the vendored woff2 (upm 2000, ascent
+ * 1470, descent -530, cap height 1340) at line-height 1.08, the cap band runs
+ * 0.105em to 0.775em and its centre is 0.100em above the box centre. So the
+ * mark moves up by exactly that. A transform rather than a margin, because
+ * this is a correction to where the icon is *drawn* and should not change what
+ * the row is. */
+.mark {
+  flex: none;
+  color: var(--accent);
+  transform: translateY(calc(var(--title-size) * -0.1));
+}
 .mark svg { width: 38px; height: 38px; }
 
 h1 {
   margin: 0;
   flex: 1;
   font-family: var(--font-serif);
-  font-size: clamp(32px, 5.2vw, 44px);
+  font-size: var(--title-size);
   font-weight: 400;
   letter-spacing: -0.015em;
-  line-height: 1.08;
+  line-height: 1.08;   /* the mark's offset above is derived from this */
 }
 h1 .arrow { color: var(--accent); }
 
@@ -363,6 +384,10 @@ footer code { font-size: 0.9em; background: none; padding: 0; }
   body { padding: 36px 18px 64px; }
   .title-row { flex-wrap: wrap; }
   h1 { flex-basis: 100%; order: 3; }
+  /* The title drops to its own line here, so the mark is no longer beside it --
+   * it sits next to the theme button instead, and the optical nudge above would
+   * only push it off that. */
+  .mark { transform: none; }
   #theme { margin-left: auto; }
   #start { margin-left: 0; width: 100%; }
   .field { width: 100%; }
